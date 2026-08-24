@@ -1,0 +1,112 @@
+# Backlog: Egress Discovery & Specification Engine
+
+Milestone-based backlog for the PoC defined in `architecture-specification.md`.
+Advisory-only: nothing in M0–M3 blocks traffic. The PoC succeeds when a human
+can ratify a workload's egress specification and the system signals on drift.
+
+## PoC demo scenario (definition of done)
+
+1. Environment: one RHEL 9 VM running a systemd service and a podman
+   container; one OpenShift namespace with a sample workload. Central store +
+   dashboard reachable by the reviewing team.
+2. Seed infrastructure endpoints (DNS, LDAP/Kerberos, NTP, package mirrors)
+   from static sources; reviewer confirms.
+3. Discovery runs in parallel across all nodes. Proposals appear grouped by
+   workload, static matches pre-suggested, risk-annotated items highlighted.
+4. Reviewer ratifies (allow/deny per line). Decisions land in Git with
+   `owner`, `decided_by`, version.
+5. **Drift demo:** the ratified workload contacts a net-new endpoint →
+   `spec_deviation` signal on the JSON stream *and* re-entry in the queue.
+6. **Invariant demo:** the service spawns `/bin/sh` → `invariant_violation`
+   signal with full process ancestry.
+
+Success criteria:
+
+- CPU overhead of the in-kernel plane < 1% under connection churn (measured,
+  not asserted).
+- Zero traffic blocked, ever (fail-open verified by killing central mid-demo).
+- Signal latency: endpoint connect → structured signal < 10 s.
+- Reviewer can clear initial queue for a 3-workload environment in < 15 min
+  (the "ratifiable in minutes" property).
+
+---
+
+## M0 — Kernel sensor spike
+
+Prove the Tier 1 data plane on a single RHEL 9 VM. No identity resolution, no
+central server — events to local ring buffer reader, dumped as JSON lines.
+
+| # | Story | Acceptance |
+|---|-------|-----------|
+| M0.1 | CO-RE/libbpf scaffold: load `cgroup/connect4` + `cgroup/connect6` programs; emit compact event (cgroup_id, daddr, dport, proto, ts) | Events visible for curl from a systemd service and a podman container; IPv4 + IPv6 |
+| M0.2 | LRU dedup map (32k) keyed on `(cgroup_id, daddr, dport, proto)` | Repeated connections emit once per tuple; map-full path does not drop process or crash under fuzz |
+| M0.3 | `cgroup/sendmsg4/6` for UDP/QUIC/DNS | DNS lookups and UDP flows captured |
+| M0.4 | `sched_process_exec` lineage capture (pid, ppid, path, parent path, cgroup_id) | Can attribute each egress event to exec lineage |
+| M0.5 | Raw socket probe (`sys_enter_socket`, SOCK_RAW/AF_PACKET) | `ping`/raw-socket test binary flagged |
+| M0.6 | Benchmark harness: connection-churn load test (e.g., 10k conn/s loop) with CPU measurement | Sustained overhead < 1% CPU; report committed to repo |
+
+**M0 exit:** `sensor dump | jq` shows deduplicated, lineage-attributed egress
+tuples on RHEL 9; benchmark report exists.
+
+## M1 — Node agent
+
+| # | Story | Acceptance |
+|---|-------|-----------|
+| M1.1 | Daemon scaffold (Go or Rust), bpfman-managed program loading, no `CAP_BPF`/`CAP_SYS_ADMIN` on daemon | `systemctl status` clean; capabilities audit shows none |
+| M1.2 | Passive DNS snooper (port 53 UDP/TCP) → TTL-aware IP↔FQDN cache | curl to CDN hostname resolves to FQDN in output; TTL expiry respected |
+| M1.3 | systemd identity resolver (cgroup path → unit name) | Events carry `systemd:<unit>` fleet identity |
+| M1.4 | podman identity resolver (`libpod-<id>` → image/name) | Events carry `podman:<image:tag>` identity |
+| M1.5 | Interactive-session classifier (`session-*.scope` → reserved class, excluded from queue by default) | SSH session egress visible but flagged; not in default queue |
+| M1.6 | Local decision cache + bounded event buffer; mTLS upload with reconnect | Kill central 10 min → no event loss within buffer; traffic unaffected |
+| M1.7 | SELinux policy module for pinned maps (`ebpf_map_t`) | Enforcing mode; confined process write to map denied (AVC logged) |
+
+**M1 exit:** two nodes streaming enriched, identity-resolved events to a
+throwaway central listener; survive central outage.
+
+## M2 — Central store, ratification dashboard, signal stream (the demo)
+
+| # | Story | Acceptance |
+|---|-------|-----------|
+| M2.1 | Ingestion API (mTLS, per-node creds), idempotent dedup | Duplicate deliveries collapse; two nodes' events for same fleet identity aggregate |
+| M2.2 | Static-declaration ingestion (unit files, manifests, resolv.conf/kickstart network config) → platform seed + "suggested: allow" matching | Seed reviewable before any workload traffic; declared endpoints pre-marked in proposals |
+| M2.3 | Proposal builder: group by `(fleet_identity, endpoint, port, proto)`; attach instance spread, first/last seen, process, risk annotations | Reviewer sees one line per endpoint per workload |
+| M2.4 | Risk annotations: direct-to-ip, newly-registered-domain, shell-initiated, infrastructure-mismatch | Annotated items sort/highlight above clean ones |
+| M2.5 | Git-backed decision store (§6.3 schema: owner, decided_by, source, version) | Every UI decision commits; repo history = audit trail; revert works |
+| M2.6 | Review queue UI: grouped per-workload diff, allow/deny, bulk-accept static matches | Demo scenario step 3–4 passes; < 15 min for 3 workloads |
+| M2.7 | Drift detector: ratified workload + net-new endpoint → `spec_deviation` signal + queue re-entry | Demo step 5 passes |
+| M2.8 | Invariant signal pipeline: ancestry + raw-socket + direct-to-IP rules → `invariant_violation` | Demo step 6 passes; full parent chain in evidence |
+| M2.9 | Signal stream: structured JSON (§6.4) via webhook + file sink; spec reference embedded | A trivial script consumer can parse and act; latency < 10 s |
+| M2.10 | `denied_endpoint_observed` high-severity path | Deny an endpoint, generate traffic to it, observe top-severity signal (still no blocking) |
+
+**M2 exit:** the full demo scenario runs end to end. This is the PoC.
+
+## M3 — OpenShift coverage & hardening
+
+| # | Story | Acceptance |
+|---|-------|-----------|
+| M3.1 | Kubernetes identity resolver (pod UID → namespace/SA → `k8s:<ns>/<workload>`) | Events from a Deployment aggregate across replicas |
+| M3.2 | DaemonSet packaging via bpfman on OpenShift; SCC/SELinux posture documented | Deploys with default `restricted-v2` coexistence; no privileged daemon beyond bpfman contract |
+| M3.3 | Existing NetworkPolicy manifests ingested as static declarations | Declared k8s egress pre-marked like unit-file declarations |
+| M3.4 | Multi-node soak: 7 days on a lab cluster; dashboard metric for per-workload discovery-rate flattening | Metric visible; no auto-cutover (observability only) |
+| M3.5 | Failure-mode game day: central down, node agent down, DNS-snooper bypass (DoH), short-lived process storm | Behavior matches §13 of the architecture spec |
+
+---
+
+## Post-PoC parking lot (do not groom yet)
+
+- Enforcement: eBPF `EPERM` verdict in `cgroup/connect*`; then export of
+  ratified specs as NetworkPolicy / CiliumNetworkPolicy.
+- Multi-replica consensus automation and asymptotic cutover (only if human
+  ratification proves to not scale).
+- Owner-routed review (ChatOps per `owner` field), federated queues.
+- SPIFFE/SPIRE cryptographic workload identity.
+- L7 / operation-level specification ("write only to namespaces you own").
+- RHEL 8 / cgroup v1 support; ingress direction; automated response via AAP.
+
+## Standing rules for grooming
+
+1. Advisory-only is not negotiable in PoC: no story may introduce a blocking
+   path.
+2. Every signal must carry its specification reference.
+3. Learned data never authorizes itself: no auto-promotion stories.
+4. The review queue optimizes for reviewer minutes, not detector completeness.

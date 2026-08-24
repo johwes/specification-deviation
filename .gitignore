@@ -1,0 +1,23 @@
+# Local agent/editor config
+.claude/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Go
+/bin/
+*.test
+
+# Rust
+/target/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# eBPF build artifacts
+*.o
+vmlinux.h
