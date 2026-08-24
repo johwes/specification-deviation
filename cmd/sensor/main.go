@@ -14,6 +14,7 @@ package main
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror" -type conn_event -type exec_event -type rawsock_event bpf ../../bpf/probes.c
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -27,10 +28,23 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
+)
+
+// Under connection churn, printing one line per event via unbuffered
+// fmt.Println costs one write(2) syscall per event — a real, measured
+// confound in the M0.6 benchmark (docs/report-m0.md) that had nothing to do
+// with the eBPF/ringbuf path itself. Buffer stdout and flush on a bound
+// (event count OR elapsed time, whichever comes first) so bursts amortize
+// the syscall cost while sparse/idle periods still surface within the
+// architecture's signal-latency budget (backlog.md: <10s).
+const (
+	flushEveryEvents = 50
+	flushInterval    = 200 * time.Millisecond
 )
 
 // Wire constants mirrored from bpf/common.h. bpf2go does not propagate
@@ -170,6 +184,18 @@ func run(cgroupPath string) error {
 
 	fmt.Fprintln(os.Stderr, "sensor running; events on stdout as JSON lines")
 
+	out := bufio.NewWriterSize(os.Stdout, 64*1024)
+	unflushed := 0
+	lastFlush := time.Now()
+	maybeFlush := func() {
+		unflushed++
+		if unflushed >= flushEveryEvents || time.Since(lastFlush) >= flushInterval {
+			out.Flush()
+			unflushed = 0
+			lastFlush = time.Now()
+		}
+	}
+
 	lineage := make(map[lineageKey]lineageEntry)
 	var decodeErrs errThrottle
 	var counts [4]uint64 // indexed by event type tag; [0] = unknown
@@ -195,7 +221,8 @@ func run(cgroupPath string) error {
 				decodeErrs.logf("decode conn event: %v — possible ABI mismatch with bpf/common.h", err)
 				continue
 			}
-			emit(connEvent(&ev, lineage))
+			emit(out, connEvent(&ev, lineage))
+			maybeFlush()
 			counts[eventConn]++
 		case eventExec:
 			var ev bpfExecEvent
@@ -203,7 +230,8 @@ func run(cgroupPath string) error {
 				decodeErrs.logf("decode exec event: %v — possible ABI mismatch with bpf/common.h", err)
 				continue
 			}
-			emit(execEvent(&ev, lineage))
+			emit(out, execEvent(&ev, lineage))
+			maybeFlush()
 			counts[eventExec]++
 		case eventRawSock:
 			var ev bpfRawsockEvent
@@ -211,13 +239,15 @@ func run(cgroupPath string) error {
 				decodeErrs.logf("decode rawsock event: %v — possible ABI mismatch with bpf/common.h", err)
 				continue
 			}
-			emit(rawSockEvent(&ev))
+			emit(out, rawSockEvent(&ev))
+			maybeFlush()
 			counts[eventRawSock]++
 		default:
 			decodeErrs.logf("unknown event type %d — possible ABI mismatch with bpf/common.h", typ)
 			counts[0]++
 		}
 	}
+	out.Flush()
 
 	fmt.Fprintf(os.Stderr, "sensor stopped; conn=%d exec=%d raw_socket=%d unknown=%d decode_errors=%d\n",
 		counts[eventConn], counts[eventExec], counts[eventRawSock], counts[0], decodeErrs.n)
@@ -388,11 +418,12 @@ func parentFromProc(pid uint32) (uint32, string) {
 	return ppid, strings.TrimSpace(string(comm))
 }
 
-func emit(v any) {
+func emit(w *bufio.Writer, v any) {
 	line, err := json.Marshal(v)
 	if err != nil {
 		log.Printf("marshal event: %v", err)
 		return
 	}
-	fmt.Println(string(line))
+	w.Write(line)
+	w.WriteByte('\n')
 }
