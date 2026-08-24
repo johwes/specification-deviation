@@ -72,8 +72,7 @@ profile.
 | M1.3 | systemd identity resolver (cgroup path → unit name) | Events carry `systemd:<unit>` fleet identity |
 | M1.4 | podman identity resolver (`libpod-<id>` → image/name) | Events carry `podman:<image:tag>` identity |
 | M1.5 | Interactive-session classifier (`session-*.scope` → reserved class, excluded from queue by default) | SSH session egress visible but flagged; not in default queue |
-| M1.6 | Local decision cache + bounded event buffer; mTLS upload with reconnect | Kill central 10 min → no event loss within buffer; traffic unaffected |
-| M1.7 | SELinux policy module for pinned maps (`ebpf_map_t`) | Enforcing mode; confined process write to map denied (AVC logged) |
+| M1.6 | Local decision cache + bounded event buffer; plain-HTTP upload with reconnect (mTLS deferred — see parking lot) | Kill central 10 min → no event loss within buffer; traffic unaffected |
 
 **M1 exit:** two nodes streaming enriched, identity-resolved events to a
 throwaway central listener; survive central outage.
@@ -129,6 +128,15 @@ throwaway central listener; survive central outage.
 - Map sharing across independently-loaded programs (bpfman's
   `--map-owner-id`) — would allow splitting the node agent into a small
   privileged loader plus separate unprivileged consumer processes.
+- SELinux policy module for pinned BPF maps (`ebpf_map_t`) — defense-in-depth
+  against a compromised process tampering with sensor state; hardens the
+  tool, doesn't demonstrate the detection thesis. Revisit if the pitch wants
+  a "we eat our own dogfood" story.
+- mTLS for node→central upload (M1.6 uses plain HTTP for the PoC instead) —
+  real PKI (per-node cert issuance/rotation) is production scope; the
+  property actually being demonstrated is buffering/reconnect resilience,
+  which doesn't depend on the transport's auth model. The same question
+  will recur at M2.1 (central ingestion API currently specs mTLS too).
 
 ## Standing rules for grooming
 
