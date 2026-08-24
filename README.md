@@ -39,11 +39,28 @@ scope instead of the root cgroup:
     # in another terminal:
     sudo ./bin/sensor -cgroup /sys/fs/cgroup/system.slice/egress-test.scope | jq .
 
-Known spike caveats: destination-port byte order follows the UAPI docs
-(network order) — verify on first live run (`curl :443` must print 443, not
-36863). UDP on connected sockets is seen by both the connect and sendmsg
-hooks; dedup absorbs it. Processes are attributed by pid/comm only until
-M0.4 (exec lineage) lands.
+Inside the scoped shell, exercise the three event types:
+
+    curl -s https://example.com >/dev/null        # conn (egress tuple)
+    ls                                            # exec (lineage)
+    python3 -c 'import socket; socket.socket(socket.AF_PACKET, socket.SOCK_RAW)'
+                                                  # raw_socket (invariant signal)
+
+Note: the cgroup hooks are scoped to the `-cgroup` subtree; the exec and
+raw-socket tracepoints are host-wide (cgroup_id on the event is the filter key).
+
+Known spike caveats:
+
+- Destination-port byte order follows the UAPI docs (network order) — verify on
+  first live run (`curl :443` must print 443, not 36863).
+- UDP on connected sockets is seen by both the connect and sendmsg hooks; dedup
+  absorbs it.
+- Lineage attribution only covers execs observed after sensor start, is
+  best-effort via /proc for parent info (short-lived processes may be gone),
+  and can mis-attribute on pid reuse. Eager in-kernel resolution is M1.
+- Modern ping uses unprivileged SOCK_DGRAM ping sockets
+  (net.ipv4.ping_group_range) and is intentionally NOT flagged — test the
+  raw-socket invariant with the AF_PACKET one-liner above.
 
 ## Status
 
