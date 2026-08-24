@@ -13,6 +13,9 @@ import (
 type Config struct {
 	CgroupPath string `json:"cgroup_path"`
 	LogLevel   string `json:"log_level"`
+	// CentralURL enables upload when set (M1.6). Empty means stdout-only,
+	// the M0/M1.1-M1.5 behavior -- zero required setup by default.
+	CentralURL string `json:"central_url"`
 }
 
 func defaultConfig() Config {

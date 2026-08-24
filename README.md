@@ -25,9 +25,13 @@ and signals; it never blocks traffic.
 - `docs/` — design documents (see above)
 - `bpf/` — eBPF kernel programs (C, CO-RE)
 - `cmd/sensor/` — node-agent daemon: userspace loader/reader (Go, cilium/ebpf)
+- `cmd/throwaway-listener/` — disposable test listener for M1.6's
+  buffer/reconnect demo; not part of the product, M2 builds the real
+  ingestion API
 - `packaging/` — systemd unit + example config for running the daemon (M1.1)
 - `Makefile` — `make build` generates and compiles everything; `make install`
-  installs the daemon as a systemd service
+  installs the daemon as a systemd service; `make build-listener` builds the
+  test listener
 - `Containerfile` — reproducible build environment
 
 ## Building the M0 spike
@@ -81,8 +85,8 @@ Known spike caveats:
     journalctl -u specdev-sensor -f
 
 Config (`/etc/specification-deviation/sensor.json`) is optional — a missing
-file runs on defaults (root cgroup, info logging). `cgroup_path` and
-`log_level` are the only settings so far.
+file runs on defaults (root cgroup, info logging, no central upload).
+`cgroup_path`, `log_level`, and `central_url` are the settings so far.
 
     sudo systemctl reload specdev-sensor   # SIGHUP: re-reads config
     sudo systemctl stop specdev-sensor
@@ -96,7 +100,35 @@ M0 spike did, and needs `CAP_BPF` itself (`User=root` in the unit for now).
 See `docs/backlog.md`'s parking lot for why (`bpfman` has no supported
 bare-metal RHEL 9 path today) and what it would otherwise be worth using for.
 
+## Fleet identity, DNS names, and central upload (M1.2-M1.6)
+
+Every event now carries `fleet_identity` — `systemd:<unit>.service`,
+`podman:<image:tag>`, or the reserved `systemd:session` / `systemd:crond.service`
+classes (M1.5's egress-visible-but-flagged treatment; there's no queue to
+exclude them from by default until M2). `conn` events carry `fqdn` when the
+destination has a passively-observed DNS answer in cache (IPv4 only this
+milestone; TTL-bound, expired entries are treated as a cache miss).
+
+Set `central_url` in the config to stream events to a central endpoint as
+batched JSON POSTs (plain HTTP, not mTLS — see the parking lot in
+`docs/backlog.md` for why), in addition to stdout:
+
+    { "central_url": "http://central.example:8443/events" }
+
+A bounded local buffer (200k events) means a central outage never blocks
+live event processing or loses events within that bound — try it with the
+disposable test listener:
+
+    make build-listener
+    ./bin/throwaway-listener -addr 127.0.0.1:8443   # separate terminal
+
+Kill and restart the listener while the sensor runs: the backlog logs as
+"upload failed, will retry" during the outage and drains in one batch the
+moment the listener comes back (also drained once, on a clean sensor
+shutdown, so a restart doesn't strand whatever's still buffered).
+
 ## Status
 
-Design phase complete. M0 done (`docs/report-m0.md`); M1.1 (node-agent
-daemon scaffold) done. Remaining M1 work tracked in `docs/backlog.md`.
+Design phase complete. M0 done (`docs/report-m0.md`); M1 (M1.1-M1.6, the
+node-agent daemon) done. M2 (central store, ratification dashboard, the
+actual demo) is next — see `docs/backlog.md`.

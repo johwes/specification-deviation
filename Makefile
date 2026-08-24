@@ -8,7 +8,7 @@ BIN := bin/sensor
 PREFIX ?= /usr/local
 DESTDIR ?=
 
-.PHONY: all generate build vet install clean
+.PHONY: all generate build build-listener vet install clean
 
 all: build
 
@@ -18,6 +18,11 @@ generate:
 
 build: generate
 	$(GO) build -o $(BIN) ./cmd/sensor
+
+# Disposable M1 test tool (see cmd/throwaway-listener) -- not installed,
+# not part of the product.
+build-listener:
+	$(GO) build -o bin/throwaway-listener ./cmd/throwaway-listener
 
 vet: generate
 	$(GO) vet ./...

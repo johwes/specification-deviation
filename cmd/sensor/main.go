@@ -237,6 +237,13 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 	dns := newDNSCache()
 	go snoopDNS(ctx.Done(), dns)
 
+	var up *uploader
+	if cfg.CentralURL != "" {
+		up = newUploader(cfg.CentralURL)
+		go up.run(ctx)
+		slog.Info("central upload enabled", "url", cfg.CentralURL)
+	}
+
 	slog.Info("sensor running; events on stdout as JSON lines", "cgroup_path", cfg.CgroupPath)
 
 	out := bufio.NewWriterSize(os.Stdout, 64*1024)
@@ -278,7 +285,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 				decodeErrs.log("decode conn event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
-			emit(out, connEvent(&ev, lineage, ident, dns))
+			emit(out, up, connEvent(&ev, lineage, ident, dns))
 			maybeFlush()
 			counts[eventConn]++
 		case eventExec:
@@ -287,7 +294,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 				decodeErrs.log("decode exec event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
-			emit(out, execEvent(&ev, lineage, ident))
+			emit(out, up, execEvent(&ev, lineage, ident))
 			maybeFlush()
 			counts[eventExec]++
 		case eventRawSock:
@@ -299,7 +306,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 			if ev.Tgid == selfPID {
 				continue // our own DNS snooper's AF_PACKET socket -- expected, not a signal
 			}
-			emit(out, rawSockEvent(&ev, ident))
+			emit(out, up, rawSockEvent(&ev, ident))
 			maybeFlush()
 			counts[eventRawSock]++
 		default:
@@ -308,6 +315,16 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 		}
 	}
 	out.Flush()
+
+	if up != nil {
+		// ctx is already done (that's why the read loop above exited), so a
+		// last drain needs its own context -- otherwise this would return
+		// immediately without sending. A graceful shutdown should not lose
+		// whatever's still buffered any more than a central outage does.
+		drainCtx, cancel := context.WithTimeout(context.Background(), uploadTimeout)
+		up.drain(drainCtx)
+		cancel()
+	}
 
 	slog.Info("sensor stopped",
 		"conn", counts[eventConn], "exec", counts[eventExec], "raw_socket", counts[eventRawSock],
@@ -489,7 +506,7 @@ func parentFromProc(pid uint32) (uint32, string) {
 	return ppid, strings.TrimSpace(string(comm))
 }
 
-func emit(w *bufio.Writer, v any) {
+func emit(w *bufio.Writer, up *uploader, v any) {
 	line, err := json.Marshal(v)
 	if err != nil {
 		slog.Error("marshal event failed", "error", err)
@@ -497,4 +514,7 @@ func emit(w *bufio.Writer, v any) {
 	}
 	w.Write(line)
 	w.WriteByte('\n')
+	if up != nil {
+		up.enqueue(line)
+	}
 }
