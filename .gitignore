@@ -21,3 +21,6 @@ __pycache__/
 # eBPF build artifacts
 *.o
 vmlinux.h
+
+# bpf2go generated code (regenerate with `make generate`)
+cmd/sensor/bpf_bpf*.go
