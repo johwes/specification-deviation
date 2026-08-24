@@ -79,6 +79,7 @@ type connOut struct {
 	CgroupID      uint64 `json:"cgroup_id"`
 	FleetIdentity string `json:"fleet_identity"`
 	Addr          string `json:"addr"`
+	FQDN          string `json:"fqdn,omitempty"`
 	Port          uint16 `json:"port"`
 	Protocol      string `json:"protocol"`
 	Family        string `json:"family"`
@@ -233,6 +234,9 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 		}
 	}()
 
+	dns := newDNSCache()
+	go snoopDNS(ctx.Done(), dns)
+
 	slog.Info("sensor running; events on stdout as JSON lines", "cgroup_path", cfg.CgroupPath)
 
 	out := bufio.NewWriterSize(os.Stdout, 64*1024)
@@ -249,6 +253,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 
 	lineage := make(map[lineageKey]lineageEntry)
 	ident := newIdentityResolver()
+	selfPID := uint32(os.Getpid())
 	var decodeErrs errThrottle
 	var counts [4]uint64 // indexed by event type tag; [0] = unknown
 
@@ -273,7 +278,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 				decodeErrs.log("decode conn event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
-			emit(out, connEvent(&ev, lineage, ident))
+			emit(out, connEvent(&ev, lineage, ident, dns))
 			maybeFlush()
 			counts[eventConn]++
 		case eventExec:
@@ -290,6 +295,9 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 			if err := binary.Read(bytes.NewBuffer(rec.RawSample), binary.LittleEndian, &ev); err != nil {
 				decodeErrs.log("decode rawsock event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
+			}
+			if ev.Tgid == selfPID {
+				continue // our own DNS snooper's AF_PACKET socket -- expected, not a signal
 			}
 			emit(out, rawSockEvent(&ev, ident))
 			maybeFlush()
@@ -358,7 +366,7 @@ func attachAll(cgroupPath string, objs *bpfObjects) ([]link.Link, error) {
 
 // connEvent converts a kernel conn event to JSON output, enriched with exec
 // lineage when the table has an entry for this (cgroup, process).
-func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry, ident *identityResolver) connOut {
+func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry, ident *identityResolver, dns *dnsCache) connOut {
 	out := connOut{
 		Type:          "conn",
 		CgroupID:      ev.Key.CgroupId,
@@ -369,15 +377,22 @@ func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry, ident *ide
 		TsNs:          ev.Ts,
 	}
 
+	var addr netip.Addr
 	switch ev.Key.Family {
 	case familyV4:
 		out.Family = "ipv4"
-		out.Addr = netip.AddrFrom4([4]byte(ev.Key.Addr[:4])).String()
+		addr = netip.AddrFrom4([4]byte(ev.Key.Addr[:4]))
 	case familyV6:
 		out.Family = "ipv6"
-		out.Addr = netip.AddrFrom16(ev.Key.Addr).String()
+		addr = netip.AddrFrom16(ev.Key.Addr)
 	default:
 		out.Family = fmt.Sprintf("family:%d", ev.Key.Family)
+	}
+	if addr.IsValid() {
+		out.Addr = addr.String()
+		if fqdn, ok := dns.lookup(addr); ok {
+			out.FQDN = fqdn
+		}
 	}
 
 	switch ev.Key.Protocol {
