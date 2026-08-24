@@ -144,7 +144,7 @@ minutes — is the product. Everything else is plumbing.
 │  - Passive DNS snooper (IP↔FQDN cache, TTL-aware)                       │
 │  - Identity resolvers: systemd unit / podman container / k8s pod        │
 │  - Local decision cache (fail-open when central is down)                │
-│  - Privilege isolation via bpfman; SELinux confinement                  │
+│  - (Privilege isolation & SELinux confinement: deferred hardening, §14)   │
 └───────────────────────────────────────▲─────────────────────────────────┘
                                         │ In-kernel lookups; cache misses only
 ┌───────────────────────────────────────┴─────────────────────────────────┐
@@ -290,15 +290,30 @@ degrades to redundant events, not blind spots.
 
 ### 7.3 Performance
 
-"Sub-1% CPU" is an **acceptance criterion with a benchmark** (M0), not a
-claim. The LRU fast path makes it plausible at steady state; it must be
-demonstrated under connection churn on a loaded node.
+Measured on RHEL 9.8 (2 vCPU VM), per `report-m0.md`:
+
+- **Dedup-hit (fast) path: within the <1% CPU budget** — ~+1% wall / ~1pt CPU
+  under sustained repeated-tuple churn. The design assumption holds.
+- **Slow path (sustained net-new churn, ~32k events/s):** ~+5.5pt total CPU
+  and ~46× context-switch rate — one ring-buffer wakeup per event. **Accepted
+  as a known limitation** for the PoC: sustained tens-of-thousands-of-novel-
+  destinations-per-second is an attack/benchmark profile, not a workload
+  profile, and the 1-vCPU worst case is below RHEL 9's own 2-vCPU supported
+  floor. Post-PoC lever if needed: ring-buffer consumer batching (attribution
+  via `perf stat` scoped to the sensor first — the churn generator itself
+  consumes significant CPU in these measurements).
+- Sobering detail for §12: this cost peaks exactly during a scan burst — i.e.,
+  when the system is under attack. Noted, accepted, not silently dropped.
 
 ---
 
 ## 8. Tier 2: Node-Local Identity & State Engine
 
-Unprivileged daemon per node (bpfman-managed):
+Daemon per node. For the PoC it loads BPF programs directly and holds
+`CAP_BPF` itself — bpfman has no supported path on bare-metal RHEL 9 (no
+official RPM), so bpfman-brokered privilege separation is deferred hardening
+(§14), along with its two interesting future capabilities: signed sensor
+bytecode and map sharing across independently loaded programs.
 
 - **Passive DNS snooper:** parses port-53 UDP/TCP responses; caches
   IP→FQDN with record TTL; resolves raw destination IPs at event time.
@@ -311,16 +326,18 @@ Unprivileged daemon per node (bpfman-managed):
 - **Local decision cache:** ratified specs and recent decisions cached on
   node; discovery continues when central is down (bounded buffer, flush on
   reconnect). Central is a convenience, never a dependency.
-- **Privilege isolation:** no `CAP_BPF`/`CAP_SYS_ADMIN` on the daemon; map and
-  probe operations brokered by bpfman over authenticated local gRPC. Pinned
-  maps get a dedicated SELinux type (`ebpf_map_t`); compromised containers
-  cannot write them.
+- **Privilege isolation (deferred):** bpfman-brokered map/probe operations
+  without daemon `CAP_BPF`, plus SELinux confinement of pinned maps
+  (`ebpf_map_t`) so compromised containers cannot tamper with sensor state.
+  Hardening scope, not detection-thesis scope — see §14.
 
 ---
 
 ## 9. Tier 3: Central Aggregation & Specification Store
 
-- **Ingestion API** (mTLS, per-node credentials), idempotent event dedup.
+- **Ingestion API** — plain HTTP for the PoC (proves buffering/reconnect
+  resilience: "central is a convenience, never a dependency"); mTLS with
+  per-node credentials is production scope (§14). Idempotent event dedup.
 - **Proposal builder:** aggregates discovery events by fleet identity;
   intersects with **static declarations** (unit files, manifests, kickstart
   network config, existing NetworkPolicies) so obvious infrastructure arrives
@@ -410,6 +427,15 @@ Declared invariants (PoC set):
    limitation that it does not catch C2 over legitimate, resolved services.
    That is what the ratified specification exists for.*
 
+**Invariants must survive a live noise audit before earning "high
+confidence."** The raw-socket probe's first live run was ~100% false
+positives: 835/835 events during ordinary activity were `AF_NETLINK`
+(`sudo`, PAM, systemd, audit), not `AF_PACKET` — kernel↔userspace plumbing,
+not capture/spoofing capability (see `report-m0.md`). `AF_NETLINK` is now
+excluded by construction. Rule going forward: no invariant graduates to
+high-severity routing until its false-positive rate has been measured on a
+live system, not inferred from the hook definition.
+
 ---
 
 ## 13. Failure Modes & Known Limitations
@@ -440,12 +466,19 @@ Declared invariants (PoC set):
 
 ## 14. Security of the System Itself
 
-- bpfman-brokered privilege separation (no `CAP_BPF`/`CAP_SYS_ADMIN` on the
-  daemon).
+**PoC reality:** the daemon runs as root and holds `CAP_BPF` (loads programs
+directly); node→central upload is plain HTTP. This is deliberate — the PoC
+proves the detection thesis, not hardening of the tool.
+
+**Deferred hardening (production scope):**
+
+- bpfman-brokered privilege separation (no `CAP_BPF` on the daemon) — blocked
+  on a supported bpfman path for bare-metal RHEL 9.
 - SELinux type confinement for pinned BPF maps (`ebpf_map_t`).
-- mTLS node→central with per-node credentials.
+- mTLS node→central with per-node credentials (applies to M2's ingestion API
+  as well — same question, same answer).
 - Signed, Git-versioned decision records — the specification store is
-  auditable and revertible.
+  auditable and revertible. *(Still planned for M2; cheap because Git.)*
 - Dashboard authN/Z; decisions attributable (`decided_by`).
 
 ---
@@ -454,7 +487,6 @@ Declared invariants (PoC set):
 
 - RHEL 9+ (kernel ≥ 5.14, **cgroup v2**, BTF for CO-RE), podman 4+.
 - OpenShift 4.x on RHEL 9 nodes for the k8s environment.
-- bpfman for probe/map lifecycle.
 - RHEL 8 / cgroup v1: explicit non-goal.
 
 ---
@@ -463,10 +495,12 @@ Declared invariants (PoC set):
 
 Milestone-based; full story-level backlog in `backlog.md`.
 
-- **M0 — Kernel sensor spike:** Tier 1 hooks + LRU dedup on a RHEL 9 VM;
-  prove the <1% CPU budget under churn.
+- **M0 — Kernel sensor spike:** Tier 1 hooks + LRU dedup on a RHEL 9 VM.
+  *Done — see `report-m0.md`: functional checks pass; fast path within the
+  <1% CPU budget; sustained-churn cost measured and accepted (§7.3).*
 - **M1 — Node agent:** DNS snooper, systemd + podman identity resolvers,
-  local cache, mTLS upload.
+  local cache, buffered plain-HTTP upload with reconnect.
+  *Done — see `report-m1.md`.*
 - **M2 — Central store + ratification dashboard (the demo):** proposals,
   Git-backed decisions with `owner`, drift re-entry, signal stream. Demo:
   ratify a workload, then have it touch a new endpoint → `spec_deviation`
