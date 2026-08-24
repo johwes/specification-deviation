@@ -75,40 +75,43 @@ const (
 // until then.
 
 type connOut struct {
-	Type       string `json:"type"` // "conn"
-	CgroupID   uint64 `json:"cgroup_id"`
-	Addr       string `json:"addr"`
-	Port       uint16 `json:"port"`
-	Protocol   string `json:"protocol"`
-	Family     string `json:"family"`
-	PID        uint32 `json:"pid"`
-	Comm       string `json:"comm"`
-	ExecPath   string `json:"exec_path,omitempty"`
-	ParentComm string `json:"parent_comm,omitempty"`
-	TsNs       uint64 `json:"ts_ns"`
+	Type          string `json:"type"` // "conn"
+	CgroupID      uint64 `json:"cgroup_id"`
+	FleetIdentity string `json:"fleet_identity"`
+	Addr          string `json:"addr"`
+	Port          uint16 `json:"port"`
+	Protocol      string `json:"protocol"`
+	Family        string `json:"family"`
+	PID           uint32 `json:"pid"`
+	Comm          string `json:"comm"`
+	ExecPath      string `json:"exec_path,omitempty"`
+	ParentComm    string `json:"parent_comm,omitempty"`
+	TsNs          uint64 `json:"ts_ns"`
 }
 
 type execOut struct {
-	Type       string `json:"type"` // "exec"
-	CgroupID   uint64 `json:"cgroup_id"`
-	PID        uint32 `json:"pid"`
-	Comm       string `json:"comm"`
-	Path       string `json:"path"`
-	PPID       uint32 `json:"ppid,omitempty"`
-	ParentComm string `json:"parent_comm,omitempty"`
-	TsNs       uint64 `json:"ts_ns"`
+	Type          string `json:"type"` // "exec"
+	CgroupID      uint64 `json:"cgroup_id"`
+	FleetIdentity string `json:"fleet_identity"`
+	PID           uint32 `json:"pid"`
+	Comm          string `json:"comm"`
+	Path          string `json:"path"`
+	PPID          uint32 `json:"ppid,omitempty"`
+	ParentComm    string `json:"parent_comm,omitempty"`
+	TsNs          uint64 `json:"ts_ns"`
 }
 
 type rawSockOut struct {
-	Type     string `json:"type"`   // "raw_socket"
-	Signal   string `json:"signal"` // "raw_socket_creation"
-	CgroupID uint64 `json:"cgroup_id"`
-	PID      uint32 `json:"pid"`
-	Comm     string `json:"comm"`
-	Family   int32  `json:"family"`
-	SockType int32  `json:"sock_type"`
-	Protocol int32  `json:"protocol"`
-	TsNs     uint64 `json:"ts_ns"`
+	Type          string `json:"type"`   // "raw_socket"
+	Signal        string `json:"signal"` // "raw_socket_creation"
+	CgroupID      uint64 `json:"cgroup_id"`
+	FleetIdentity string `json:"fleet_identity"`
+	PID           uint32 `json:"pid"`
+	Comm          string `json:"comm"`
+	Family        int32  `json:"family"`
+	SockType      int32  `json:"sock_type"`
+	Protocol      int32  `json:"protocol"`
+	TsNs          uint64 `json:"ts_ns"`
 }
 
 // lineageKey joins exec and conn events. Note the spike-grade caveats in the
@@ -245,6 +248,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 	}
 
 	lineage := make(map[lineageKey]lineageEntry)
+	ident := newIdentityResolver()
 	var decodeErrs errThrottle
 	var counts [4]uint64 // indexed by event type tag; [0] = unknown
 
@@ -269,7 +273,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 				decodeErrs.log("decode conn event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
-			emit(out, connEvent(&ev, lineage))
+			emit(out, connEvent(&ev, lineage, ident))
 			maybeFlush()
 			counts[eventConn]++
 		case eventExec:
@@ -278,7 +282,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 				decodeErrs.log("decode exec event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
-			emit(out, execEvent(&ev, lineage))
+			emit(out, execEvent(&ev, lineage, ident))
 			maybeFlush()
 			counts[eventExec]++
 		case eventRawSock:
@@ -287,7 +291,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 				decodeErrs.log("decode rawsock event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
-			emit(out, rawSockEvent(&ev))
+			emit(out, rawSockEvent(&ev, ident))
 			maybeFlush()
 			counts[eventRawSock]++
 		default:
@@ -354,14 +358,15 @@ func attachAll(cgroupPath string, objs *bpfObjects) ([]link.Link, error) {
 
 // connEvent converts a kernel conn event to JSON output, enriched with exec
 // lineage when the table has an entry for this (cgroup, process).
-func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry) connOut {
+func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry, ident *identityResolver) connOut {
 	out := connOut{
-		Type:     "conn",
-		CgroupID: ev.Key.CgroupId,
-		Port:     ev.Key.Dport,
-		PID:      ev.Tgid,
-		Comm:     cstr(ev.Comm[:]),
-		TsNs:     ev.Ts,
+		Type:          "conn",
+		CgroupID:      ev.Key.CgroupId,
+		FleetIdentity: ident.resolve(ev.Key.CgroupId, ev.Tgid),
+		Port:          ev.Key.Dport,
+		PID:           ev.Tgid,
+		Comm:          cstr(ev.Comm[:]),
+		TsNs:          ev.Ts,
 	}
 
 	switch ev.Key.Family {
@@ -395,7 +400,7 @@ func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry) connOut {
 // execEvent records lineage for later conn events and converts to JSON output.
 // Parent info is best-effort from /proc: a short-lived process may already be
 // gone, in which case the fields are simply omitted.
-func execEvent(ev *bpfExecEvent, lineage map[lineageKey]lineageEntry) execOut {
+func execEvent(ev *bpfExecEvent, lineage map[lineageKey]lineageEntry, ident *identityResolver) execOut {
 	path := cstr(ev.Path[:])
 	ppid, parentComm := parentFromProc(ev.Tgid)
 
@@ -414,28 +419,30 @@ func execEvent(ev *bpfExecEvent, lineage map[lineageKey]lineageEntry) execOut {
 	}
 
 	return execOut{
-		Type:       "exec",
-		CgroupID:   ev.CgroupId,
-		PID:        ev.Tgid,
-		Comm:       cstr(ev.Comm[:]),
-		Path:       path,
-		PPID:       ppid,
-		ParentComm: parentComm,
-		TsNs:       ev.Ts,
+		Type:          "exec",
+		CgroupID:      ev.CgroupId,
+		FleetIdentity: ident.resolve(ev.CgroupId, ev.Tgid),
+		PID:           ev.Tgid,
+		Comm:          cstr(ev.Comm[:]),
+		Path:          path,
+		PPID:          ppid,
+		ParentComm:    parentComm,
+		TsNs:          ev.Ts,
 	}
 }
 
-func rawSockEvent(ev *bpfRawsockEvent) rawSockOut {
+func rawSockEvent(ev *bpfRawsockEvent, ident *identityResolver) rawSockOut {
 	return rawSockOut{
-		Type:     "raw_socket",
-		Signal:   "raw_socket_creation",
-		CgroupID: ev.CgroupId,
-		PID:      ev.Tgid,
-		Comm:     cstr(ev.Comm[:]),
-		Family:   ev.Family,
-		SockType: ev.SockType,
-		Protocol: ev.Protocol,
-		TsNs:     ev.Ts,
+		Type:          "raw_socket",
+		Signal:        "raw_socket_creation",
+		CgroupID:      ev.CgroupId,
+		FleetIdentity: ident.resolve(ev.CgroupId, ev.Tgid),
+		PID:           ev.Tgid,
+		Comm:          cstr(ev.Comm[:]),
+		Family:        ev.Family,
+		SockType:      ev.SockType,
+		Protocol:      ev.Protocol,
+		TsNs:          ev.Ts,
 	}
 }
 
