@@ -16,6 +16,9 @@ and signals; it never blocks traffic.
   PoC system architecture (advisory-only, egress-focused).
 - [`docs/backlog.md`](docs/backlog.md) — milestone-based backlog (M0–M3) implementing
   the architecture.
+- [`docs/testing-m0.md`](docs/testing-m0.md) — M0 acceptance-test runbook for a RHEL 9 VM.
+- [`docs/report-m0.md`](docs/report-m0.md) — results of running that runbook against
+  real hardware: what passed, what was inconclusive, and the bugs it found.
 
 ## Repository layout
 
@@ -61,6 +64,9 @@ Known spike caveats:
 - Modern ping uses unprivileged SOCK_DGRAM ping sockets
   (net.ipv4.ping_group_range) and is intentionally NOT flagged — test the
   raw-socket invariant with the AF_PACKET one-liner above.
+- AF_NETLINK sockets (used constantly by PAM, systemd, sudo, and the audit
+  subsystem) are intentionally NOT flagged either — confirmed live
+  (`docs/report-m0.md`) that they otherwise dominate the raw-socket signal.
 
 ## Status
 

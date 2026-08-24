@@ -173,6 +173,13 @@ int handle_exec(struct sched_process_exec_ctx *ctx)
 // NOTE: modern ping uses unprivileged SOCK_DGRAM ping sockets
 // (net.ipv4.ping_group_range) and is intentionally NOT flagged. Test with an
 // explicit AF_PACKET/SOCK_RAW creation; see README.
+//
+// NOTE: AF_NETLINK sockets are always SOCK_RAW or SOCK_DGRAM by convention
+// (that's just the netlink API, not a raw-packet capability) and are created
+// constantly by ordinary system plumbing — PAM, systemd, sudo, the audit
+// subsystem. Confirmed live on docs/report-m0.md: a single `sudo` invocation
+// produced 4-5 of these, 100% of observed raw_socket events under normal
+// load. Excluded regardless of type to keep this invariant high-confidence.
 SEC("tp/syscalls/sys_enter_socket")
 int handle_raw_socket(struct sys_enter_socket_ctx *ctx)
 {
@@ -180,6 +187,9 @@ int handle_raw_socket(struct sys_enter_socket_ctx *ctx)
 	__s64 type = (__s64)ctx->args[1];
 	// socket type carries SOCK_CLOEXEC/SOCK_NONBLOCK flag bits; mask them.
 	__s64 masked_type = type & LINUX_SOCK_TYPE_MASK;
+
+	if (family == LINUX_AF_NETLINK)
+		return 0;
 
 	if (family != LINUX_AF_PACKET && masked_type != LINUX_SOCK_RAW)
 		return 0;

@@ -7,8 +7,9 @@ shell (or sudo).
 ## 1. Build environment (once)
 
 ```bash
-# libbpf-devel lives in CRB (CodeReady Builder)
-sudo subscription-manager repos --enable codeready-builder-for-rhel-9-$(uname -m) \
+# libbpf-devel lives in CRB (CodeReady Builder). Note the -rpms suffix — the
+# repo ID is codeready-builder-for-rhel-9-<arch>-rpms, not ...-<arch> alone.
+sudo subscription-manager repos --enable codeready-builder-for-rhel-9-$(uname -m)-rpms \
   || sudo dnf config-manager --set-enabled crb    # CentOS Stream equivalent
 
 sudo dnf install -y git make clang llvm bpftool libbpf-devel kernel-headers

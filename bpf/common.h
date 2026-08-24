@@ -43,6 +43,7 @@ enum event_type {
 // minimal). Unlike the FAMILY_*/PROTO_* wire markers above, these ARE the
 // real syscall constants.
 #define LINUX_AF_PACKET      17
+#define LINUX_AF_NETLINK     16
 #define LINUX_SOCK_RAW       3
 #define LINUX_SOCK_TYPE_MASK 0xf // SOCK_CLOEXEC/SOCK_NONBLOCK live above this
 
