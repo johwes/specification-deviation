@@ -19,6 +19,8 @@ and signals; it never blocks traffic.
 - [`docs/testing-m0.md`](docs/testing-m0.md) — M0 acceptance-test runbook for a RHEL 9 VM.
 - [`docs/report-m0.md`](docs/report-m0.md) — results of running that runbook against
   real hardware: what passed, what was inconclusive, and the bugs it found.
+- [`docs/report-m1.md`](docs/report-m1.md) — M1 node-agent live-test results:
+  what passed, one real bug found and fixed, and named outstanding gaps.
 
 ## Repository layout
 
