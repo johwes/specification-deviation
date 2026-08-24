@@ -24,8 +24,10 @@ and signals; it never blocks traffic.
 
 - `docs/` — design documents (see above)
 - `bpf/` — eBPF kernel programs (C, CO-RE)
-- `cmd/sensor/` — M0 sensor spike: userspace loader/reader (Go, cilium/ebpf)
-- `Makefile` — `make build` generates and compiles everything
+- `cmd/sensor/` — node-agent daemon: userspace loader/reader (Go, cilium/ebpf)
+- `packaging/` — systemd unit + example config for running the daemon (M1.1)
+- `Makefile` — `make build` generates and compiles everything; `make install`
+  installs the daemon as a systemd service
 - `Containerfile` — reproducible build environment
 
 ## Building the M0 spike
@@ -68,7 +70,33 @@ Known spike caveats:
   subsystem) are intentionally NOT flagged either — confirmed live
   (`docs/report-m0.md`) that they otherwise dominate the raw-socket signal.
 
+## Running as a systemd daemon (M1.1)
+
+    make install                     # installs binary, unit, example config
+    sudo cp /etc/specification-deviation/sensor.json.example \
+            /etc/specification-deviation/sensor.json   # optional; defaults apply if absent
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now specdev-sensor
+    sudo systemctl status specdev-sensor
+    journalctl -u specdev-sensor -f
+
+Config (`/etc/specification-deviation/sensor.json`) is optional — a missing
+file runs on defaults (root cgroup, info logging). `cgroup_path` and
+`log_level` are the only settings so far.
+
+    sudo systemctl reload specdev-sensor   # SIGHUP: re-reads config
+    sudo systemctl stop specdev-sensor
+
+Reload applies `log_level` immediately. Changing `cgroup_path` requires a
+full restart (`systemctl restart specdev-sensor`) — reload logs a warning if
+it sees a `cgroup_path` change it can't apply live.
+
+No `bpfman` broker: the daemon loads BPF programs directly, the same way the
+M0 spike did, and needs `CAP_BPF` itself (`User=root` in the unit for now).
+See `docs/backlog.md`'s parking lot for why (`bpfman` has no supported
+bare-metal RHEL 9 path today) and what it would otherwise be worth using for.
+
 ## Status
 
-Design phase complete. M0 spike in progress (kernel egress sensor) per
-`docs/backlog.md`; live testing targets a RHEL 9 VM.
+Design phase complete. M0 done (`docs/report-m0.md`); M1.1 (node-agent
+daemon scaffold) done. Remaining M1 work tracked in `docs/backlog.md`.

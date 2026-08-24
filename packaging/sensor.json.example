@@ -1,0 +1,4 @@
+{
+  "cgroup_path": "/sys/fs/cgroup",
+  "log_level": "info"
+}

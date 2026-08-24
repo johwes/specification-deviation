@@ -1,5 +1,5 @@
-// Command sensor is the M0 observation spike: it attaches eBPF programs and
-// tracepoints, then prints one JSON line per observed event:
+// Command sensor is the node-agent daemon (M1.1): it attaches eBPF programs
+// and tracepoints, then prints one JSON line per observed event to stdout:
 //
 //	conn        net-new (cgroup, endpoint) egress tuple (deduped in-kernel)
 //	exec        process exec lineage (joined onto conn events when known)
@@ -7,8 +7,14 @@
 //
 // Advisory-only: the eBPF programs never block.
 //
+// Configuration is a JSON file (packaging/sensor.json.example), reloaded on
+// SIGHUP — log level takes effect immediately; a changed cgroup_path
+// requires a full restart. Loads BPF programs directly (no bpfman broker;
+// see docs/backlog.md's parking lot), so the daemon itself needs CAP_BPF.
+//
 // Build with `make build` at the repo root (runs go generate first; the
-// generated bpf_bpf*.go files are gitignored).
+// generated bpf_bpf*.go files are gitignored). Install as a systemd service
+// with `make install` (see packaging/specdev-sensor.service).
 package main
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror" -type conn_event -type exec_event -type rawsock_event bpf ../../bpf/probes.c
@@ -22,7 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -126,10 +132,10 @@ const maxLineageEntries = 65536
 // immediately, then every 1000th.
 type errThrottle struct{ n uint64 }
 
-func (t *errThrottle) logf(format string, args ...any) {
+func (t *errThrottle) log(msg string, args ...any) {
 	t.n++
 	if t.n <= 5 || t.n%1000 == 0 {
-		log.Printf(format+" (occurrence %d)", append(args, t.n)...)
+		slog.Warn(msg, append(args, "occurrence", t.n)...)
 	}
 }
 
@@ -138,28 +144,44 @@ func cstr(b []byte) string {
 }
 
 func main() {
-	cgroupPath := flag.String("cgroup", "/sys/fs/cgroup",
-		"cgroup v2 path for the egress hooks (the root observes the whole node; tracepoint probes are always host-wide)")
+	configPath := flag.String("config", "/etc/specification-deviation/sensor.json",
+		"path to daemon config file (a missing file falls back to defaults)")
+	cgroupOverride := flag.String("cgroup", "",
+		"cgroup v2 path override for the egress hooks (defaults to the config file's cgroup_path, or /sys/fs/cgroup if unset)")
 	flag.Parse()
 
-	if *cgroupPath == "/sys/fs/cgroup" {
-		fmt.Fprintln(os.Stderr, "warning: attaching to the root cgroup — ALL node egress will be observed.")
-		fmt.Fprintln(os.Stderr, "for an isolated test use: systemd-run --scope --unit=egress-test bash")
+	programLevel := new(slog.LevelVar)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: programLevel})))
+
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		slog.Error("failed to load config", "path", *configPath, "error", err)
+		os.Exit(1)
+	}
+	programLevel.Set(parseLogLevel(cfg.LogLevel))
+	if *cgroupOverride != "" {
+		cfg.CgroupPath = *cgroupOverride
 	}
 
-	if err := run(*cgroupPath); err != nil {
-		log.Fatal(err)
+	if cfg.CgroupPath == "/sys/fs/cgroup" {
+		slog.Warn("attaching to the root cgroup — ALL node egress will be observed",
+			"hint", "for an isolated test use: systemd-run --scope --unit=egress-test bash")
+	}
+
+	if err := run(cfg, *configPath, programLevel); err != nil {
+		slog.Error("sensor exited with error", "error", err)
+		os.Exit(1)
 	}
 }
 
-func run(cgroupPath string) error {
+func run(cfg Config, configPath string, level *slog.LevelVar) error {
 	objs := bpfObjects{}
 	if err := loadBpfObjects(&objs, nil); err != nil {
 		return fmt.Errorf("loading eBPF objects (needs root/CAP_BPF, cgroup v2, BTF): %w", err)
 	}
 	defer objs.Close()
 
-	links, err := attachAll(cgroupPath, &objs)
+	links, err := attachAll(cfg.CgroupPath, &objs)
 	if err != nil {
 		return err
 	}
@@ -182,7 +204,33 @@ func run(cgroupPath string) error {
 		rd.Close()
 	}()
 
-	fmt.Fprintln(os.Stderr, "sensor running; events on stdout as JSON lines")
+	// SIGHUP reload (systemd `ExecReload=`): log level applies immediately;
+	// a changed cgroup_path needs a full restart to re-attach, since that
+	// means tearing down and recreating the cgroup links above.
+	sighup := make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sighup:
+				newCfg, err := loadConfig(configPath)
+				if err != nil {
+					slog.Error("reload failed, keeping current settings", "path", configPath, "error", err)
+					continue
+				}
+				level.Set(parseLogLevel(newCfg.LogLevel))
+				slog.Info("config reloaded", "log_level", newCfg.LogLevel)
+				if newCfg.CgroupPath != cfg.CgroupPath {
+					slog.Warn("cgroup_path changed but requires a full restart to take effect",
+						"current", cfg.CgroupPath, "new", newCfg.CgroupPath)
+				}
+			}
+		}
+	}()
+
+	slog.Info("sensor running; events on stdout as JSON lines", "cgroup_path", cfg.CgroupPath)
 
 	out := bufio.NewWriterSize(os.Stdout, 64*1024)
 	unflushed := 0
@@ -210,7 +258,7 @@ func run(cgroupPath string) error {
 		}
 
 		if len(rec.RawSample) < 8 {
-			decodeErrs.logf("short record (%d bytes) — possible ABI mismatch with bpf/common.h", len(rec.RawSample))
+			decodeErrs.log("short record — possible ABI mismatch with bpf/common.h", "bytes", len(rec.RawSample))
 			continue
 		}
 
@@ -218,7 +266,7 @@ func run(cgroupPath string) error {
 		case eventConn:
 			var ev bpfConnEvent
 			if err := binary.Read(bytes.NewBuffer(rec.RawSample), binary.LittleEndian, &ev); err != nil {
-				decodeErrs.logf("decode conn event: %v — possible ABI mismatch with bpf/common.h", err)
+				decodeErrs.log("decode conn event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
 			emit(out, connEvent(&ev, lineage))
@@ -227,7 +275,7 @@ func run(cgroupPath string) error {
 		case eventExec:
 			var ev bpfExecEvent
 			if err := binary.Read(bytes.NewBuffer(rec.RawSample), binary.LittleEndian, &ev); err != nil {
-				decodeErrs.logf("decode exec event: %v — possible ABI mismatch with bpf/common.h", err)
+				decodeErrs.log("decode exec event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
 			emit(out, execEvent(&ev, lineage))
@@ -236,21 +284,22 @@ func run(cgroupPath string) error {
 		case eventRawSock:
 			var ev bpfRawsockEvent
 			if err := binary.Read(bytes.NewBuffer(rec.RawSample), binary.LittleEndian, &ev); err != nil {
-				decodeErrs.logf("decode rawsock event: %v — possible ABI mismatch with bpf/common.h", err)
+				decodeErrs.log("decode rawsock event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
 			emit(out, rawSockEvent(&ev))
 			maybeFlush()
 			counts[eventRawSock]++
 		default:
-			decodeErrs.logf("unknown event type %d — possible ABI mismatch with bpf/common.h", typ)
+			decodeErrs.log("unknown event type — possible ABI mismatch with bpf/common.h", "type", typ)
 			counts[0]++
 		}
 	}
 	out.Flush()
 
-	fmt.Fprintf(os.Stderr, "sensor stopped; conn=%d exec=%d raw_socket=%d unknown=%d decode_errors=%d\n",
-		counts[eventConn], counts[eventExec], counts[eventRawSock], counts[0], decodeErrs.n)
+	slog.Info("sensor stopped",
+		"conn", counts[eventConn], "exec", counts[eventExec], "raw_socket", counts[eventRawSock],
+		"unknown", counts[0], "decode_errors", decodeErrs.n)
 	return nil
 }
 
@@ -421,7 +470,7 @@ func parentFromProc(pid uint32) (uint32, string) {
 func emit(w *bufio.Writer, v any) {
 	line, err := json.Marshal(v)
 	if err != nil {
-		log.Printf("marshal event: %v", err)
+		slog.Error("marshal event failed", "error", err)
 		return
 	}
 	w.Write(line)

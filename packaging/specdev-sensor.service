@@ -1,0 +1,19 @@
+[Unit]
+Description=Specification Deviation egress/invariant sensor (M1 node agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/specdev-sensor -config /etc/specification-deviation/sensor.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# Direct BPF loading (M0/M1.1 approach; no bpfman broker -- see the parking
+# lot in docs/backlog.md). Running as root for the PoC; capability
+# minimization is deferred, not required for M1.1's acceptance bar.
+User=root
+
+[Install]
+WantedBy=multi-user.target
