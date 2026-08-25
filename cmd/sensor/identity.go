@@ -21,6 +21,7 @@ import (
 var (
 	systemdServiceRE = regexp.MustCompile(`([^/]+\.service)$`)
 	podmanScopeRE    = regexp.MustCompile(`libpod-([0-9a-f]{12,64})\.scope`)
+	podmanCLIScopeRE = regexp.MustCompile(`podman-\d+\.scope$`)
 	sessionScopeRE   = regexp.MustCompile(`session-[^/]+\.scope$`)
 )
 
@@ -86,14 +87,25 @@ func classifyCgroupPath(path string) string {
 	}
 
 	// Reserved classes first (M1.5): collapse to one instance-agnostic
-	// identity regardless of session number or which host it's on. Egress
-	// from these stays visible in the event stream; a downstream review
-	// queue (M2) is what actually excludes them by default.
+	// identity regardless of session number or which host it's on. There's
+	// no stable spec to ratify for arbitrary human-invoked activity, but
+	// that must not mean hidden -- risk-matching activity in these classes
+	// still surfaces prominently (architecture-specification.md §5.2);
+	// only the risk-clean majority is deprioritized from the default queue.
 	if sessionScopeRE.MatchString(path) {
 		return "systemd:session"
 	}
 	if strings.HasSuffix(path, "crond.service") {
 		return "systemd:crond.service"
+	}
+	// A bare podman CLI invocation that never creates a container (search,
+	// pull, login, images...) has no libpod-*.scope to find -- rootless
+	// podman just gets a generic systemd auto-scope for its own process
+	// (podman-<pid>.scope). Found live: `podman search` fell all the way
+	// through to "unresolved:<full-path>". Structurally the same as an
+	// interactive shell: ad hoc human tool use, not a persistent workload.
+	if podmanCLIScopeRE.MatchString(path) {
+		return "podman:cli"
 	}
 
 	if m := podmanScopeRE.FindStringSubmatch(path); m != nil {
