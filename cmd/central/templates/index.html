@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Specification Deviation -- Review Queue</title>
+<style>
+  body { font-family: monospace; margin: 2em; background: #111; color: #ddd; }
+  h1, h2 { color: #fff; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 2em; }
+  td, th { border: 1px solid #444; padding: 0.4em 0.6em; text-align: left; font-size: 0.9em; }
+  th { background: #222; }
+  .workload { background: #1a2a1a; }
+  .risk { color: #ffb703; font-weight: bold; }
+  .sig-spec_deviation { color: #ffb703; }
+  .sig-invariant_violation { color: #e63946; }
+  .sig-denied_endpoint_observed { color: #e63946; font-weight: bold; }
+  button.allow { background: #2a6; color: #fff; border: none; padding: 0.3em 0.8em; cursor: pointer; }
+  button.deny { background: #a33; color: #fff; border: none; padding: 0.3em 0.8em; cursor: pointer; margin-left: 0.3em; }
+  input[type=text] { width: 8em; background: #222; color: #ddd; border: 1px solid #444; }
+</style>
+</head>
+<body>
+
+<h1>Specification Deviation -- Review Queue</h1>
+
+<h2>Recent Signals</h2>
+<table>
+<tr><th>At</th><th>Type</th><th>Fleet Identity</th><th>Instance</th><th>Endpoint</th><th>Evidence</th></tr>
+{{range .Signals}}
+<tr class="sig-{{.Type}}">
+  <td>{{.At}}</td><td>{{.Type}}</td><td>{{.FleetIdentity}}</td><td>{{.Instance}}</td>
+  <td>{{if .Endpoint.Value}}{{.Endpoint.Value}}{{end}}</td><td>{{.Evidence}}</td>
+</tr>
+{{else}}
+<tr><td colspan="6">(none yet)</td></tr>
+{{end}}
+</table>
+
+<h2>Pending Proposals ({{.TotalPending}} across {{len .Groups}} workloads)</h2>
+{{range .Groups}}
+<h3>{{.FleetIdentity}}</h3>
+<table>
+<tr><th>Endpoint</th><th>Port</th><th>Proto</th><th>Instances</th><th>First seen</th><th>Last seen</th><th>Count</th><th>Risk</th><th>Ratify</th></tr>
+{{$fi := .FleetIdentity}}
+{{range .Proposals}}
+<tr class="workload">
+  <td>{{.Endpoint.Value}}</td>
+  <td>{{.Port}}</td>
+  <td>{{.Protocol}}</td>
+  <td>{{.InstanceCount}}</td>
+  <td>{{.FirstSeen}}</td>
+  <td>{{.LastSeen}}</td>
+  <td>{{.Count}}</td>
+  <td class="risk">{{if .DirectToIP}}direct-to-ip {{end}}{{if .ShellInitiated}}shell-initiated{{end}}</td>
+  <td>
+    <form method="POST" action="/decide" style="display:inline">
+      <input type="hidden" name="fleet_identity" value="{{$fi}}">
+      <input type="hidden" name="endpoint_type" value="{{.Endpoint.Type}}">
+      <input type="hidden" name="endpoint_value" value="{{.Endpoint.Value}}">
+      <input type="hidden" name="port" value="{{.Port}}">
+      <input type="hidden" name="protocol" value="{{.Protocol}}">
+      <input type="text" name="owner" placeholder="owner">
+      <input type="text" name="decided_by" placeholder="decided_by" value="demo-reviewer">
+      <button class="allow" name="decision" value="allow">Allow</button>
+      <button class="deny" name="decision" value="deny">Deny</button>
+    </form>
+  </td>
+</tr>
+{{end}}
+</table>
+{{else}}
+<p>(queue is empty)</p>
+{{end}}
+
+</body>
+</html>

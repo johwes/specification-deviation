@@ -1,6 +1,8 @@
-# M0 sensor spike — build entry points.
-# Prereqs: clang, llvm, bpftool, golang, make, libbpf-devel, kernel-headers
-# (see Containerfile for a reproducible build environment).
+# Build entry points for the node-agent daemon (cmd/sensor) and the M2
+# central service (cmd/central). Prereqs for the sensor: clang, llvm,
+# bpftool, golang, make, libbpf-devel, kernel-headers (see Containerfile for
+# a reproducible build environment). cmd/central is plain Go, no eBPF
+# toolchain needed.
 
 GO ?= go
 
@@ -8,7 +10,7 @@ BIN := bin/sensor
 PREFIX ?= /usr/local
 DESTDIR ?=
 
-.PHONY: all generate build build-listener vet install clean
+.PHONY: all generate build build-listener build-central vet install clean
 
 all: build
 
@@ -20,9 +22,14 @@ build: generate
 	$(GO) build -o $(BIN) ./cmd/sensor
 
 # Disposable M1 test tool (see cmd/throwaway-listener) -- not installed,
-# not part of the product.
+# not part of the product. cmd/central (M2) supersedes it for anything
+# beyond a bare connectivity/buffering check.
 build-listener:
 	$(GO) build -o bin/throwaway-listener ./cmd/throwaway-listener
+
+# M2 central store + ratification dashboard + drift detector.
+build-central:
+	$(GO) build -o bin/central ./cmd/central
 
 vet: generate
 	$(GO) vet ./...

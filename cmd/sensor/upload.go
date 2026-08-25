@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -102,9 +103,10 @@ func (u *uploader) drain(ctx context.Context) {
 		slog.Warn("upload failed, will retry", "error", err, "buffered", len(batch))
 		return
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		slog.Warn("upload rejected, will retry", "status", resp.StatusCode, "buffered", len(batch))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		slog.Warn("upload rejected, will retry", "status", resp.StatusCode, "buffered", len(batch), "response", string(respBody))
 		return
 	}
 

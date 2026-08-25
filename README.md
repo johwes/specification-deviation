@@ -21,19 +21,22 @@ and signals; it never blocks traffic.
   real hardware: what passed, what was inconclusive, and the bugs it found.
 - [`docs/report-m1.md`](docs/report-m1.md) — M1 node-agent live-test results:
   what passed, one real bug found and fixed, and named outstanding gaps.
+- [`docs/report-m2.md`](docs/report-m2.md) — M2 central-store/dashboard
+  live-test results: the full ratify-then-detect-drift loop proven end to
+  end across two real nodes, two real bugs found and fixed, named gaps.
 
 ## Repository layout
 
 - `docs/` — design documents (see above)
 - `bpf/` — eBPF kernel programs (C, CO-RE)
 - `cmd/sensor/` — node-agent daemon: userspace loader/reader (Go, cilium/ebpf)
-- `cmd/throwaway-listener/` — disposable test listener for M1.6's
-  buffer/reconnect demo; not part of the product, M2 builds the real
-  ingestion API
+- `cmd/throwaway-listener/` — disposable test listener for a bare
+  connectivity/buffering check; `cmd/central` supersedes it for anything else
+- `cmd/central/` — M2 central store, ratification dashboard, drift detector
 - `packaging/` — systemd unit + example config for running the daemon (M1.1)
 - `Makefile` — `make build` generates and compiles everything; `make install`
-  installs the daemon as a systemd service; `make build-listener` builds the
-  test listener
+  installs the daemon as a systemd service; `make build-listener` /
+  `make build-central` build the two other binaries
 - `Containerfile` — reproducible build environment
 
 ## Building the M0 spike
@@ -129,8 +132,30 @@ Kill and restart the listener while the sensor runs: the backlog logs as
 moment the listener comes back (also drained once, on a clean sensor
 shutdown, so a restart doesn't strand whatever's still buffered).
 
+## Central store & ratification dashboard (M2)
+
+    make build-central                # → bin/central
+    ./bin/central -addr :8080          # data/decisions (git repo), data/signals.jsonl
+
+Point one or more sensors at it (`central_url` in `sensor.json`), then open
+`http://<central-host>:8080/` — pending proposals grouped by workload, with
+allow/deny forms. Each ratification is a real `git commit` in
+`data/decisions/`. A workload with a ratified decision that then contacts a
+net-new endpoint produces a `spec_deviation` signal in `data/signals.jsonl`
+(`tail -f data/signals.jsonl | jq`) and the endpoint reappears in the
+pending queue. `raw_socket` events always produce `invariant_violation`,
+regardless of ratification state. Denying an endpoint and then observing
+traffic to it produces `denied_endpoint_observed`.
+
+Plain HTTP, no mTLS — same reasoning as M1.6's upload path (see the parking
+lot in `docs/backlog.md`). M2.2 (pre-marking obvious infrastructure like DNS
+resolvers as "suggested: allow" from static declarations) isn't built —
+every proposal needs manual ratification for now, `docs/report-m2.md` has a
+live example of exactly the noise that leaves in the queue.
+
 ## Status
 
-Design phase complete. M0 done (`docs/report-m0.md`); M1 (M1.1-M1.6, the
-node-agent daemon) done. M2 (central store, ratification dashboard, the
-actual demo) is next — see `docs/backlog.md`.
+Design phase complete. M0 done (`docs/report-m0.md`), M1 done
+(`docs/report-m1.md`), M2 done (`docs/report-m2.md`) — the backlog's demo
+scenario (discover → ratify → detect drift → signal) runs end to end on
+real hardware. M3 (OpenShift coverage) is next — see `docs/backlog.md`.
