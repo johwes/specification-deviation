@@ -198,6 +198,27 @@ exactly as it does for k8s replicas. Hostname/pod-UID is carried as an
   risk-based, not category-based: session/cron activity that matches a risk
   annotation (§11.2) stays fully visible and prominent; only the risk-clean
   majority is deprioritized from the default queue view.
+- **`podman:cli` — bare podman CLI operations, and podman's own network
+  helper.** A podman invocation that never creates a container (`search`,
+  `pull`, `login`) has no `libpod-*.scope` to match — rootless podman just
+  gets a generic systemd auto-scope for its own process
+  (`podman-<pid>.scope`), found live falling through all the way to
+  `unresolved:<path>` before this class existed. Reserved, same risk-based
+  (not category-based) treatment as `systemd:session` above — structurally
+  the same thing, ad hoc human tool use, not a persistent workload.
+
+  Confirmed live to also catch something else entirely: rootless podman's
+  default network backend, **pasta**, is a separate host-side helper
+  process — not part of the container — that performs the container's
+  real outbound connections on its behalf. A single `curl` inside a
+  container therefore legitimately produces *two* proposals for the same
+  logical action: the container's own view (`podman:<id>`, the `curl`
+  process's `connect()`) and pasta's corresponding connection
+  (`podman:cli`, since pasta itself gets the same generic auto-scope).
+  Not a bug — two real processes, two real cgroups, two real `connect()`
+  calls. `podman:cli` is a slightly imprecise name for this now (it's
+  "podman's own non-container processes," not just CLI operations);
+  `podman:infra` would describe it more accurately if this gets revisited.
 - **Eager resolution:** a short-lived process can exit before its cgroup is
   resolvable. The node agent resolves cgroup path → logical identity **at first
   observation**, caches for the cgroup's lifetime.
@@ -547,6 +568,18 @@ risky case.
   queue after N days.
 - **cgroup races / ID reuse:** eager resolution at first observation; short
   grace window for PID reuse.
+- **A `conn` event with `protocol:"udp"` does not mean a packet was sent.**
+  `connect()` on a `SOCK_DGRAM` socket is a purely local kernel operation —
+  it records a default peer and lets the kernel resolve routing/source
+  address, but transmits nothing on its own. This is a well-known,
+  zero-traffic technique (glibc's own RFC 6724 address-selection sorting
+  uses it internally when `getaddrinfo()` returns multiple candidates) and
+  it's indistinguishable, from this sensor's vantage point, from a
+  `connect()` that precedes real data. Confirmed live: a single `curl`
+  produced a `udp` `conn` event to the target address/port, ~138µs before
+  the real `tcp` connection that actually fetched the page. The event is a
+  faithful record of a real `connect()` syscall; it just isn't proof of
+  network traffic the way a `sendmsg()`-sourced UDP event is.
 - **Advisory-only:** the system detects; it cannot stop anything. That is a
   commitment, not a gap.
 
