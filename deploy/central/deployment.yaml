@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: central
+  labels:
+    app: central
+  annotations:
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"central:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"central\")].image"}]
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: central
+  template:
+    metadata:
+      labels:
+        app: central
+    spec:
+      containers:
+        - name: central
+          image: "image-registry.openshift-image-registry.svc:5000/rhn-sa-jwesterl-dev/central:latest"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: central-data

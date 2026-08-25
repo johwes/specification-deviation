@@ -1,0 +1,21 @@
+# Multi-stage build for cmd/central (M2). Build context is the repo root
+# (see deploy/central/buildconfig.yaml -- dockerfilePath points here).
+#
+# Runs fine under OpenShift's default restricted-v2 SCC: no root needed,
+# just an arbitrary UID with GID 0 able to write /app/data (the standard
+# OpenShift "chgrp 0 + chmod g=u" convention, since GID 0 is guaranteed as
+# a supplementary group for any arbitrary UID under that SCC).
+FROM registry.access.redhat.com/ubi9/go-toolset:latest AS builder
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/central ./cmd/central
+RUN go build -o /build/central ./cmd/central
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+RUN microdnf install -y git && microdnf clean all
+WORKDIR /app
+COPY --from=builder /build/central /app/central
+RUN mkdir -p /app/data && chgrp -R 0 /app/data && chmod -R g=u /app/data
+EXPOSE 8080
+ENTRYPOINT ["/app/central", "-addr", ":8080", "-decisions", "/app/data/decisions", "-signals", "/app/data/signals.jsonl"]

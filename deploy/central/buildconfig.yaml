@@ -1,0 +1,20 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: central
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/johwes/specification-deviation.git
+      ref: main
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: cmd/central/Containerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: central:latest
+  triggers:
+    - type: ConfigChange
