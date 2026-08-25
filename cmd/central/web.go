@@ -128,6 +128,42 @@ func decideHandler(decisions *DecisionStore) http.HandlerFunc {
 	}
 }
 
+// dismissHandler, dismissWorkloadHandler, and dismissAllHandler are
+// housekeeping, not ratification -- see the comment on Store.Dismiss.
+func dismissHandler(store *Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		port, err := strconv.ParseUint(r.FormValue("port"), 10, 16)
+		if err != nil {
+			http.Error(w, "bad port: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		store.Dismiss(r.FormValue("fleet_identity"), r.FormValue("endpoint_value"), uint16(port), r.FormValue("protocol"))
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	}
+}
+
+func dismissWorkloadHandler(store *Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		store.DismissWorkload(r.FormValue("fleet_identity"))
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	}
+}
+
+func dismissAllHandler(store *Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		store.DismissAll()
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	}
+}
+
 func eventsHandler(store *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)

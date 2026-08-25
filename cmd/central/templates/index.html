@@ -16,6 +16,8 @@
   .sig-denied_endpoint_observed { color: #e63946; font-weight: bold; }
   button.allow { background: #2a6; color: #fff; border: none; padding: 0.3em 0.8em; cursor: pointer; }
   button.deny { background: #a33; color: #fff; border: none; padding: 0.3em 0.8em; cursor: pointer; margin-left: 0.3em; }
+  button.dismiss { background: #555; color: #fff; border: none; padding: 0.3em 0.8em; cursor: pointer; margin-left: 0.3em; }
+  button.dismiss-workload, button.dismiss-all { background: #555; color: #fff; border: none; padding: 0.15em 0.6em; cursor: pointer; font-size: 0.7em; margin-left: 0.6em; }
   input[type=text] { width: 8em; background: #222; color: #ddd; border: 1px solid #444; }
 </style>
 </head>
@@ -36,12 +38,25 @@
 {{end}}
 </table>
 
-<h2>Pending Proposals ({{.TotalPending}} across {{len .Groups}} workloads)</h2>
+<h2>
+  Pending Proposals ({{.TotalPending}} across {{len .Groups}} workloads)
+  {{if .Groups}}
+  <form method="POST" action="/dismiss-all" style="display:inline" onsubmit="return confirm('Dismiss all pending proposals? No decisions are created -- traffic that recurs will just reappear.');">
+    <button type="submit" class="dismiss-all">Dismiss All</button>
+  </form>
+  {{end}}
+</h2>
 {{range .Groups}}
-<h3>{{.FleetIdentity}}</h3>
+{{$fi := .FleetIdentity}}
+<h3>
+  {{$fi}}
+  <form method="POST" action="/dismiss-workload" style="display:inline">
+    <input type="hidden" name="fleet_identity" value="{{$fi}}">
+    <button type="submit" class="dismiss-workload">Dismiss all for this workload</button>
+  </form>
+</h3>
 <table>
 <tr><th>Endpoint</th><th>Port</th><th>Proto</th><th>Instances</th><th>First seen</th><th>Last seen</th><th>Count</th><th>Risk</th><th>Ratify</th></tr>
-{{$fi := .FleetIdentity}}
 {{range .Proposals}}
 <tr class="workload">
   <td>{{.Endpoint.Value}}</td>
@@ -63,6 +78,13 @@
       <input type="text" name="decided_by" placeholder="decided_by" value="demo-reviewer">
       <button class="allow" name="decision" value="allow">Allow</button>
       <button class="deny" name="decision" value="deny">Deny</button>
+    </form>
+    <form method="POST" action="/dismiss" style="display:inline">
+      <input type="hidden" name="fleet_identity" value="{{$fi}}">
+      <input type="hidden" name="endpoint_value" value="{{.Endpoint.Value}}">
+      <input type="hidden" name="port" value="{{.Port}}">
+      <input type="hidden" name="protocol" value="{{.Protocol}}">
+      <button type="submit" class="dismiss">Dismiss</button>
     </form>
   </td>
 </tr>

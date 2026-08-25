@@ -54,6 +54,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", indexHandler(tmpl, store, signals))
 	mux.HandleFunc("POST /decide", decideHandler(decisions))
+	mux.HandleFunc("POST /dismiss", dismissHandler(store))
+	mux.HandleFunc("POST /dismiss-workload", dismissWorkloadHandler(store))
+	mux.HandleFunc("POST /dismiss-all", dismissAllHandler(store))
 	mux.HandleFunc("POST /events", eventsHandler(store))
 
 	slog.Info("central listening", "addr", *addr, "decisions", *decisionsPath, "signals", *signalsPath)

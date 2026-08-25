@@ -191,3 +191,33 @@ func (s *Store) PendingProposals() map[string][]*Proposal {
 	}
 	return out
 }
+
+// Dismiss, DismissWorkload, and DismissAll are housekeeping, not
+// ratification: they remove entries from the pending queue without
+// creating a decision. No git commit, nothing is allowed or denied -- if
+// the same traffic recurs, it simply reappears as a fresh proposal next
+// time. This is deliberately weaker than a real decision (backlog.md's
+// standing rule: "learned data never authorizes itself"); it exists purely
+// to let a reviewer clear noise they don't want to look at right now.
+
+func (s *Store) Dismiss(fleetIdentity, endpointValue string, port uint16, protocol string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.proposals, proposalKey{fleetIdentity, endpointValue, port, protocol})
+}
+
+func (s *Store) DismissWorkload(fleetIdentity string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.proposals {
+		if k.fleetIdentity == fleetIdentity {
+			delete(s.proposals, k)
+		}
+	}
+}
+
+func (s *Store) DismissAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.proposals = make(map[proposalKey]*Proposal)
+}
