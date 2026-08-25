@@ -6,16 +6,21 @@
 # OpenShift "chgrp 0 + chmod g=u" convention, since GID 0 is guaranteed as
 # a supplementary group for any arbitrary UID under that SCC).
 FROM registry.access.redhat.com/ubi9/go-toolset:latest AS builder
-WORKDIR /build
+# /opt/app-root/src is go-toolset's own default WORKDIR -- unlike a
+# freshly-created directory (e.g. /build), it's already set up writable
+# under an arbitrary UID. A new WORKDIR inherits root's default
+# permissions instead and breaks the build under OpenShift (found live:
+# "permission denied" on the go build output).
+WORKDIR /opt/app-root/src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/central ./cmd/central
-RUN go build -o /build/central ./cmd/central
+RUN go build -o /opt/app-root/src/central ./cmd/central
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 RUN microdnf install -y git && microdnf clean all
 WORKDIR /app
-COPY --from=builder /build/central /app/central
+COPY --from=builder /opt/app-root/src/central /app/central
 RUN mkdir -p /app/data && chgrp -R 0 /app/data && chmod -R g=u /app/data
 EXPOSE 8080
 ENTRYPOINT ["/app/central", "-addr", ":8080", "-decisions", "/app/data/decisions", "-signals", "/app/data/signals.jsonl"]
