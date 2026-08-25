@@ -69,27 +69,59 @@ exits) after the stdout flush. Re-tested under the same worst-case timing:
 `"uploaded events to central" count=32` now fires immediately before
 `"sensor stopped"`, confirmed live.
 
+## M1 exit criterion — two-node test
+
+The original gap: every M1.1-M1.6 test above ran on `rhel-9-2vcpu` alone,
+uploading to a listener on the same box. The M1 exit criterion specifically
+asks for two nodes streaming to one shared central listener, which was never
+run. Closed in a follow-up session, with one schema addition needed to make
+the test actually mean something and one real environment finding along the
+way.
+
+**Schema addition: `instance` field.** Events carried `fleet_identity`
+(deliberately instance-agnostic — "500 identical `httpd.service` instances
+aggregate into one fleet identity," architecture-specification.md §5) but no
+field identifying *which node* produced an event. Without it, two nodes
+streaming to one listener would be indistinguishable from one node
+streaming twice — the test would prove network connectivity and nothing
+about multi-instance identity. Added `instance` (from `os.Hostname()`) to
+all three event types, computed once at daemon startup.
+
+**Environment finding: VM-internal addresses aren't cross-node routable;
+pod IPs are, except to yourself.** Both VMs report an identical internal
+address (`10.0.2.2/24`) — KubeVirt's masquerade binding gives each VM its
+own private, per-VM NAT view of "the network," so this address cannot be
+used for node-to-node communication at all. The real, cluster-routable
+address is each VM's *pod* IP (`oc get vmi` → `.status.interfaces`). Cross-
+node traffic to the pod IP works correctly. A node connecting to its *own*
+pod IP does not (hairpin NAT — confirmed by comparing loopback, which
+works, against self-via-pod-IP, which doesn't). Practical upshot: point
+`central_url` at loopback for a co-located sensor, and at the pod IP for a
+genuinely remote one. None of this is a bug in the sensor; it's a property
+of the test environment worth knowing before configuring `central_url`
+anywhere else built on KubeVirt.
+
+**Result: pass.** With `rhel-9-2vcpu` uploading to `127.0.0.1:8443` and
+`rhel-9-ebpf` uploading to `rhel-9-2vcpu`'s pod IP, both nodes' events
+reached the one shared listener — 290 events across 19 interleaved batches
+from both nodes concurrently — and each node's own event stream correctly
+carried its own hostname (`"instance":"rhel-9-2vcpu"` /
+`"instance":"rhel-9-ebpf"` respectively), confirming the events are
+genuinely distinguishable by origin, not just double-counted.
+
 ## Outstanding items (not blockers, honest gaps)
 
-1. **The M1 exit criterion says "two nodes streaming ... to a ... central
-   listener"; only one node was ever tested.** Every mechanism (identity,
-   DNS, buffering, reconnect) is proven on `rhel-9-2vcpu` alone, uploading
-   to a listener on the same box. The literal two-node scenario — both
-   `rhel-9-2vcpu` and `rhel-9-ebpf` streaming to one shared central listener
-   — was never run. This is the most substantive gap; worth closing if the
-   literal exit criterion needs to be demonstrated, e.g. for a stakeholder
-   demo, rather than just the underlying mechanism being sound.
-2. DNS TTL expiry: correct by inspection, not live-verified.
-3. `systemd:crond.service` classification: code exists, never empirically
+1. DNS TTL expiry: correct by inspection, not live-verified.
+2. `systemd:crond.service` classification: code exists, never empirically
    triggered.
-4. Podman identity resolution: only tested rootful, not rootless.
+3. Podman identity resolution: only tested rootful, not rootless.
 
 ## Summary
 
-All six M1 stories are implemented and live-tested on real hardware, with
-one real bug found and fixed via live testing (the shutdown-drain gap) —
-consistent with M0's pattern of live testing catching things code review
-alone wouldn't have. Four items above are honest, named gaps rather than
-silently dropped scope: none block moving to M2, but #1 (the two-node
-demonstration) is the one worth a deliberate decision on before treating M1
-as fully closed for demo purposes.
+All six M1 stories are implemented and live-tested on real hardware,
+including the two-node exit criterion. Two real things were found and fixed
+via live testing rather than code review: the M1.6 shutdown-drain gap, and
+the missing `instance` field that would have made a two-node test
+misleadingly easy to declare "passing" without actually proving multi-node
+distinguishability. Three items above remain honest, named gaps — none
+block moving to M2.

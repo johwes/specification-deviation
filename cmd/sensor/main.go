@@ -76,6 +76,7 @@ const (
 
 type connOut struct {
 	Type          string `json:"type"` // "conn"
+	Instance      string `json:"instance"`
 	CgroupID      uint64 `json:"cgroup_id"`
 	FleetIdentity string `json:"fleet_identity"`
 	Addr          string `json:"addr"`
@@ -92,6 +93,7 @@ type connOut struct {
 
 type execOut struct {
 	Type          string `json:"type"` // "exec"
+	Instance      string `json:"instance"`
 	CgroupID      uint64 `json:"cgroup_id"`
 	FleetIdentity string `json:"fleet_identity"`
 	PID           uint32 `json:"pid"`
@@ -105,6 +107,7 @@ type execOut struct {
 type rawSockOut struct {
 	Type          string `json:"type"`   // "raw_socket"
 	Signal        string `json:"signal"` // "raw_socket_creation"
+	Instance      string `json:"instance"`
 	CgroupID      uint64 `json:"cgroup_id"`
 	FleetIdentity string `json:"fleet_identity"`
 	PID           uint32 `json:"pid"`
@@ -261,6 +264,11 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 	lineage := make(map[lineageKey]lineageEntry)
 	ident := newIdentityResolver()
 	selfPID := uint32(os.Getpid())
+	instance, err := os.Hostname()
+	if err != nil {
+		slog.Warn("hostname lookup failed, tagging events as \"unknown\"", "error", err)
+		instance = "unknown"
+	}
 	var decodeErrs errThrottle
 	var counts [4]uint64 // indexed by event type tag; [0] = unknown
 
@@ -285,7 +293,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 				decodeErrs.log("decode conn event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
-			emit(out, up, connEvent(&ev, lineage, ident, dns))
+			emit(out, up, connEvent(&ev, lineage, ident, dns, instance))
 			maybeFlush()
 			counts[eventConn]++
 		case eventExec:
@@ -294,7 +302,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 				decodeErrs.log("decode exec event failed — possible ABI mismatch with bpf/common.h", "error", err)
 				continue
 			}
-			emit(out, up, execEvent(&ev, lineage, ident))
+			emit(out, up, execEvent(&ev, lineage, ident, instance))
 			maybeFlush()
 			counts[eventExec]++
 		case eventRawSock:
@@ -306,7 +314,7 @@ func run(cfg Config, configPath string, level *slog.LevelVar) error {
 			if ev.Tgid == selfPID {
 				continue // our own DNS snooper's AF_PACKET socket -- expected, not a signal
 			}
-			emit(out, up, rawSockEvent(&ev, ident))
+			emit(out, up, rawSockEvent(&ev, ident, instance))
 			maybeFlush()
 			counts[eventRawSock]++
 		default:
@@ -383,9 +391,10 @@ func attachAll(cgroupPath string, objs *bpfObjects) ([]link.Link, error) {
 
 // connEvent converts a kernel conn event to JSON output, enriched with exec
 // lineage when the table has an entry for this (cgroup, process).
-func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry, ident *identityResolver, dns *dnsCache) connOut {
+func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry, ident *identityResolver, dns *dnsCache, instance string) connOut {
 	out := connOut{
 		Type:          "conn",
+		Instance:      instance,
 		CgroupID:      ev.Key.CgroupId,
 		FleetIdentity: ident.resolve(ev.Key.CgroupId, ev.Tgid),
 		Port:          ev.Key.Dport,
@@ -432,7 +441,7 @@ func connEvent(ev *bpfConnEvent, lineage map[lineageKey]lineageEntry, ident *ide
 // execEvent records lineage for later conn events and converts to JSON output.
 // Parent info is best-effort from /proc: a short-lived process may already be
 // gone, in which case the fields are simply omitted.
-func execEvent(ev *bpfExecEvent, lineage map[lineageKey]lineageEntry, ident *identityResolver) execOut {
+func execEvent(ev *bpfExecEvent, lineage map[lineageKey]lineageEntry, ident *identityResolver, instance string) execOut {
 	path := cstr(ev.Path[:])
 	ppid, parentComm := parentFromProc(ev.Tgid)
 
@@ -452,6 +461,7 @@ func execEvent(ev *bpfExecEvent, lineage map[lineageKey]lineageEntry, ident *ide
 
 	return execOut{
 		Type:          "exec",
+		Instance:      instance,
 		CgroupID:      ev.CgroupId,
 		FleetIdentity: ident.resolve(ev.CgroupId, ev.Tgid),
 		PID:           ev.Tgid,
@@ -463,10 +473,11 @@ func execEvent(ev *bpfExecEvent, lineage map[lineageKey]lineageEntry, ident *ide
 	}
 }
 
-func rawSockEvent(ev *bpfRawsockEvent, ident *identityResolver) rawSockOut {
+func rawSockEvent(ev *bpfRawsockEvent, ident *identityResolver, instance string) rawSockOut {
 	return rawSockOut{
 		Type:          "raw_socket",
 		Signal:        "raw_socket_creation",
+		Instance:      instance,
 		CgroupID:      ev.CgroupId,
 		FleetIdentity: ident.resolve(ev.CgroupId, ev.Tgid),
 		PID:           ev.Tgid,
