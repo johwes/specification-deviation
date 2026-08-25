@@ -9,6 +9,12 @@ metadata:
       [{"from":{"kind":"ImageStreamTag","name":"central:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"central\")].image"}]
 spec:
   replicas: 1
+  strategy:
+    # RollingUpdate deadlocks against the RWO PVC: the new pod can't mount
+    # the volume while the old one still holds it (found live -- new pod
+    # stuck in ContainerCreating indefinitely). Recreate is correct for a
+    # single-replica app with an RWO volume.
+    type: Recreate
   selector:
     matchLabels:
       app: central
