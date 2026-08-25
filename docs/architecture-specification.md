@@ -188,9 +188,16 @@ exactly as it does for k8s replicas. Hostname/pod-UID is carried as an
 ### 5.2 Edge cases
 
 - **Interactive sessions** (`session-*.scope`) and cron jobs: discovered under
-  a reserved `systemd:session` / `systemd:crond.service` class, excluded from
-  the ratification queue by default to protect reviewer attention. Visible on
-  demand.
+  a reserved `systemd:session` / `systemd:crond.service` class. There is no
+  stable spec to ratify for arbitrary human shell activity — a person can run
+  anything, so "baseline it" doesn't mean what it means for a service. But
+  this must not become blanket suppression: the July 2026 breach's own C2
+  used pastebin-style dead-drops and public request-capture services (see
+  `openshift-defaults-breach-analysis.md` Phase 5) — exactly the kind of
+  thing a human session might legitimately touch. The correct treatment is
+  risk-based, not category-based: session/cron activity that matches a risk
+  annotation (§11.2) stays fully visible and prominent; only the risk-clean
+  majority is deprioritized from the default queue view.
 - **Eager resolution:** a short-lived process can exit before its cgroup is
   resolvable. The node agent resolves cgroup path → logical identity **at first
   observation**, caches for the cgroup's lifetime.
@@ -376,6 +383,28 @@ automation. Discovery-rate flattening per workload remains as a dashboard
    NTP, package mirrors, logging/metrics collectors) from static sources;
    reviewed once, up front. Seeds are global; application endpoints are never
    global.
+
+   **Package-signature-verified derivation.** For platform-shipped daemons
+   (chronyd, sshd, dnf), the strongest available declared source isn't a
+   human-authored config file — it's verifying the running binary against
+   the RPM database (owning package + digest/GPG check) and deriving the
+   proposed seed from *that package's own* declared configuration (e.g.
+   chronyd's `server`/`pool` directives). This is a legitimate declared trust
+   source (Red Hat's existing package-signing supply chain), not
+   frequency-based trust, so it doesn't violate `backlog.md`'s "learned data
+   never authorizes itself" rule.
+
+   **Critical constraint: this must derive a spec, never bypass one.**
+   Verifying chronyd's binary is genuine says nothing about whether its
+   *config* has been tampered with, or whether its runtime behavior has been
+   redirected via `chronyc`, `LD_PRELOAD`, or library injection — all
+   legitimate-feature abuse, exactly the failure mode this system exists to
+   catch. A compromised config on a verified binary must still produce
+   `spec_deviation` the moment it contacts an undeclared endpoint.
+   "Verified" earns cheaper onboarding of the boring majority; it must never
+   earn exemption from drift detection. Treating binary identity as a proxy
+   for behavioral trust is just a more sophisticated signature check — the
+   exact blind spot this project argues against.
 2. **Stage 1 — Discovery:** sensors live everywhere in parallel (not
    sequential — sequential inheritance is error propagation). All observations
    become proposals. Nothing pages anyone.
@@ -418,10 +447,34 @@ can still land endpoints in a ratified spec. Residual risk, stated.
 
 Declared invariants (PoC set):
 
-1. **Process ancestry:** non-interactive service runtime (java, node, python,
-   httpd…) spawning interactive shells, network tools, or executing from
-   writable paths (`/tmp`, `/dev/shm`, memfd). Catches the breach's Phase 3b
-   child shell.
+1. **Process ancestry, correlated with egress — not ancestry alone.** Generic
+   "service spawned a shell" detection is a well-solved problem already
+   owned by existing tools (Falco et al.); rebuilding it adds no
+   differentiated value, which is why M0 deliberately left a bare ancestry
+   invariant out of scope. The narrower signal worth this system
+   specifically is the *compound* one: an ancestry-anomalous child of a
+   known service (httpd spawning a shell) that *then* makes network egress.
+   Falco alone can't produce this (no egress context); a NetworkPolicy alone
+   can't either (no ancestry context) — it needs exactly the
+   lineage-enriched egress this system already captures (`parent_comm`/
+   `exec_path` riding on every `conn` event). Catches the breach's Phase 3b
+   child shell at the point it becomes actionable (it reaches out), not
+   merely at the point it exists. Not yet built.
+
+   **Partial platform overlap, worth naming honestly.** On bare-metal RHEL
+   with `httpd_t` confinement, SELinux's `httpd_can_network_connect` boolean
+   (off by default) would generate an AVC denial for exactly this pattern —
+   a spec-deviation-class signal already living in the platform, per
+   `specification-deviation-brief.md`'s original "aggregate existing
+   signals" thesis, which this PoC deliberately did not pursue (it built a
+   new eBPF sensor instead). That platform protection only holds under
+   conditions that commonly don't hold: the child must stay in a confined
+   domain (not `container_t`, not `unconfined_t`), and the boolean must not
+   have been toggled on for a legitimate app need (routine in practice).
+   Where it holds, this signal is redundant with it; where it doesn't
+   (containers, loosened booleans — most of this project's actual target
+   environments), it isn't. That gap is the honest justification for
+   building this rather than just consuming SELinux's audit log.
 2. **Raw/packet socket creation** by unprivileged workloads.
 3. **Direct-to-IP public egress without DNS association** — *with the stated
    limitation that it does not catch C2 over legitimate, resolved services.
