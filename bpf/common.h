@@ -44,6 +44,8 @@ enum event_type {
 // real syscall constants.
 #define LINUX_AF_PACKET      17
 #define LINUX_AF_NETLINK     16
+#define LINUX_AF_INET6       10
+#define LINUX_IPPROTO_ICMPV6 58
 #define LINUX_SOCK_RAW       3
 #define LINUX_SOCK_TYPE_MASK 0xf // SOCK_CLOEXEC/SOCK_NONBLOCK live above this
 

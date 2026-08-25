@@ -46,14 +46,23 @@ const struct rawsock_event *const rawsock_event_btf_anchor __attribute__((unused
 // observe is the shared fast/slow path for all four sock_addr hooks.
 // Fast path: tuple already in seen_connections -> refresh timestamp, return.
 // Slow path: insert tuple, emit one compact event to the ring buffer.
-static __always_inline int observe(struct bpf_sock_addr *ctx, __u8 family, __u8 protocol)
+static __always_inline int observe(struct bpf_sock_addr *ctx, __u8 family)
 {
 	struct conn_key key = {0};
 	__u64 now = bpf_ktime_get_ns();
 
 	key.cgroup_id = bpf_get_current_cgroup_id();
 	key.family = family;
-	key.protocol = protocol;
+	// ctx->protocol is the real IPPROTO_* of the underlying socket -- NOT
+	// implied by which hook fired. connect() is not TCP-exclusive: "connected
+	// UDP" sockets (connect() on a SOCK_DGRAM to fix the peer, e.g. what
+	// chronyd does for its NTP peers) also hit cgroup/connect4/6, not just
+	// cgroup/sendmsg4/6. An earlier version hardcoded PROTO_TCP per hook,
+	// which silently mislabeled all such UDP-via-connect() traffic as TCP
+	// -- found live via chronyd's NTP traffic (docs/report-m2.md). PROTO_TCP/
+	// PROTO_UDP already equal the real IPPROTO_TCP/IPPROTO_UDP values, so no
+	// remapping is needed, just reading the real field instead of assuming it.
+	key.protocol = (__u8)ctx->protocol;
 	// user_port is a __u32 holding the destination port in network byte
 	// order. VERIFY on first live run: `curl :443` must print 443, not
 	// 36863. See README "Known spike caveats".
@@ -93,25 +102,25 @@ static __always_inline int observe(struct bpf_sock_addr *ctx, __u8 family, __u8 
 SEC("cgroup/connect4")
 int egress_connect4(struct bpf_sock_addr *ctx)
 {
-	return observe(ctx, FAMILY_V4, PROTO_TCP);
+	return observe(ctx, FAMILY_V4);
 }
 
 SEC("cgroup/connect6")
 int egress_connect6(struct bpf_sock_addr *ctx)
 {
-	return observe(ctx, FAMILY_V6, PROTO_TCP);
+	return observe(ctx, FAMILY_V6);
 }
 
 SEC("cgroup/sendmsg4")
 int egress_sendmsg4(struct bpf_sock_addr *ctx)
 {
-	return observe(ctx, FAMILY_V4, PROTO_UDP);
+	return observe(ctx, FAMILY_V4);
 }
 
 SEC("cgroup/sendmsg6")
 int egress_sendmsg6(struct bpf_sock_addr *ctx)
 {
-	return observe(ctx, FAMILY_V6, PROTO_UDP);
+	return observe(ctx, FAMILY_V6);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,10 +194,22 @@ int handle_raw_socket(struct sys_enter_socket_ctx *ctx)
 {
 	__s64 family = (__s64)ctx->args[0];
 	__s64 type = (__s64)ctx->args[1];
+	__s64 protocol = (__s64)ctx->args[2];
 	// socket type carries SOCK_CLOEXEC/SOCK_NONBLOCK flag bits; mask them.
 	__s64 masked_type = type & LINUX_SOCK_TYPE_MASK;
 
 	if (family == LINUX_AF_NETLINK)
+		return 0;
+
+	// Raw ICMPv6 is how network-management daemons (NetworkManager,
+	// systemd-networkd) do IPv6 SLAAC: router/neighbor solicitation and
+	// advertisement need a genuine raw ICMPv6 socket -- it's not a
+	// capability an attacker specifically needs. Confirmed live
+	// (docs/report-m2.md): NetworkManager fires this exact pattern under
+	// completely ordinary operation. Narrowly scoped to ICMPv6 specifically
+	// -- a raw AF_INET6 socket for any OTHER protocol is still exactly the
+	// primitive this invariant exists to catch.
+	if (family == LINUX_AF_INET6 && masked_type == LINUX_SOCK_RAW && protocol == LINUX_IPPROTO_ICMPV6)
 		return 0;
 
 	if (family != LINUX_AF_PACKET && masked_type != LINUX_SOCK_RAW)
