@@ -475,7 +475,38 @@ Declared invariants (PoC set):
    (containers, loosened booleans — most of this project's actual target
    environments), it isn't. That gap is the honest justification for
    building this rather than just consuming SELinux's audit log.
-2. **Raw/packet socket creation** by unprivileged workloads.
+2. **Raw/packet socket creation** by unprivileged workloads. Two narrow,
+   evidence-based exclusions so far, and one deliberate non-exclusion:
+
+   - `AF_NETLINK` — excluded entirely. Kernel↔userspace control-plane IPC
+     (`sudo`, PAM, systemd, the audit subsystem), structurally incapable of
+     the "read/craft other people's traffic" capability this invariant
+     exists to catch. Excluding it creates no evasion path — there is
+     nothing an attacker gains by using `AF_NETLINK` instead of what
+     they'd actually need.
+   - `AF_INET6` + `SOCK_RAW` + `IPPROTO_ICMPV6` specifically — excluded.
+     This is how `NetworkManager`/`systemd-networkd` do IPv6 SLAAC
+     (router/neighbor solicitation), confirmed live. Scoped narrowly to
+     the one protocol value that's legitimate and unambiguous; a raw
+     `AF_INET6` socket for any *other* protocol still fires.
+   - `AF_PACKET` + `SOCK_DGRAM` ("cooked mode") — considered, **not**
+     excluded. `NetworkManager`'s DHCP client uses this (confirmed live:
+     `protocol:0` at socket-creation time), but two things make this a
+     different shape of problem than the ICMPv6 case: (1) `protocol:0` at
+     creation is a standard, ambiguous placeholder — many programs create
+     the socket this way and specify the real protocol later via `bind()`,
+     which this sensor doesn't currently hook, so there's no signal here
+     precise enough to scope a narrow exclusion around the way
+     `IPPROTO_ICMPV6` was for the raw-ICMPv6 case; (2) "cooked" mode still
+     exposes other processes'/hosts' traffic on the interface — the actual
+     capability this invariant cares about doesn't require the Ethernet
+     header `SOCK_RAW` adds. Excluding `SOCK_DGRAM` broadly would hand an
+     attacker a documented way to keep nearly all sniffing capability while
+     evading detection, for comparatively little noise reduction: unlike
+     `AF_NETLINK` (fires on every `sudo` call), DHCP client socket creation
+     is infrequent (boot, interface bring-up, occasional lease renewal).
+     Accepted as a known, low-frequency noise source rather than forcing a
+     fix that's either imprecise or weakens the invariant.
 3. **Direct-to-IP public egress without DNS association** — *with the stated
    limitation that it does not catch C2 over legitimate, resolved services.
    That is what the ratified specification exists for.*
@@ -487,7 +518,11 @@ positives: 835/835 events during ordinary activity were `AF_NETLINK`
 not capture/spoofing capability (see `report-m0.md`). `AF_NETLINK` is now
 excluded by construction. Rule going forward: no invariant graduates to
 high-severity routing until its false-positive rate has been measured on a
-live system, not inferred from the hook definition.
+live system, not inferred from the hook definition. The corollary, from the
+`AF_PACKET`/`SOCK_DGRAM` case above: the same discipline applies to
+*exclusions* — don't add one just because a single observed instance looks
+benign, if the signal available can't reliably distinguish it from the
+risky case.
 
 ---
 
