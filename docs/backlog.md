@@ -94,7 +94,9 @@ throwaway central listener; survive central outage.
 
 **M2 exit:** the full demo scenario runs end to end. This is the PoC.
 
-## M3 — OpenShift coverage & hardening
+## M3 — OpenShift coverage & hardening — DEFERRED
+
+> Deferred — UX validation (M2 hardening + measured `ratifiable in minutes` trial `docs/report-m2.md:130`) takes precedence over K8s portability. Retained as design, not committed timeline.
 
 | # | Story | Acceptance |
 |---|-------|-----------|

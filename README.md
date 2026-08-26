@@ -158,4 +158,4 @@ live example of exactly the noise that leaves in the queue.
 Design phase complete. M0 done (`docs/report-m0.md`), M1 done
 (`docs/report-m1.md`), M2 done (`docs/report-m2.md`) — the backlog's demo
 scenario (discover → ratify → detect drift → signal) runs end to end on
-real hardware. M3 (OpenShift coverage) is next — see `docs/backlog.md`.
+real hardware. M3 (OpenShift coverage) deferred — see `docs/backlog.md`.
