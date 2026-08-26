@@ -227,6 +227,74 @@ exactly as it does for k8s replicas. Hostname/pod-UID is carried as an
 - **SPIFFE/SPIRE** can later upgrade fleet identity to cryptographic
   attestation (including on hosts, via Unix/systemd attestation). Not PoC.
 
+### 5.3 Destination identity — the model only covers the source side, so far
+
+Everything above resolves the *source* of an event to a stable identity. The
+destination has, so far, only ever been a raw `(ip/fqdn, port, protocol)`
+tuple — even when it's something we have, or could have, a name for. Two
+real gaps, both surfaced by live testing, and both actually the same
+mechanism with two different sources of truth: resolve a raw destination to
+a richer identity *before* keying a decision or signal off it, rather than
+keying off whatever the sensor happened to observe.
+
+**1. East-west traffic between monitored workloads never becomes a graph
+edge.** If `systemd:httpd.service` on one node talks to
+`systemd:postgresql.service` on another, today we observe "`httpd` →
+`10.0.5.3:5432`" — a raw IP fact — never "`httpd` → `postgresql`", because
+central has no notion of which instance owns which address. This is
+buildable from data already aggregated centrally, if nodes additionally
+self-report their own addresses (a real but small addition) so a
+destination IP can be mapped back to a known `fleet_identity` on another
+node. This is the difference between an L3/L4 rule and an actual
+service-dependency graph (what Cilium's Hubble gives you, because as a CNI
+it instruments both ends of a connection — this system currently only
+instruments the source).
+
+**2. Round-robin/pool-style infrastructure defeats FQDN-first ratification.**
+FQDN-first representation is supposed to be the fix for "names don't rot,
+IPs do" (§2.1) — but it depends on a *specific* resolved IP still having a
+live DNS-cache entry naming it at the moment a connection to it is
+observed. NTP pools are DNS round-robin by design (short TTLs, a different
+subset of backing servers on every resolution, specifically to spread load
+across a huge volunteer pool) — confirmed live: `chronyd` produced 38
+separate `direct-to-ip` proposals for what is conceptually one relationship
+("talks to the NTP pool"), because the per-IP DNS cache entry that would
+have named a given IP had frequently already expired by the time a
+connection to it was observed. Ratifying the FQDN itself only covers
+whichever fraction of connections still had a live cache hit at ingestion
+time — it does not make the other fraction match.
+
+**The mechanism: named endpoint groups, a declared destination identity.**
+`EndpointRef` gains a third type alongside `fqdn`/`ip`: `{"type": "group",
+"value": "approved-ntp-pool"}`, backed by an operator-declared match rule
+(DNS suffix, CIDR, or exact-list) checked *before* falling back to bare
+IP/FQDN matching. Ratify once against the group name; every future
+connection matching the rule — regardless of which specific backing
+address answered — matches that same decision. This is not a new idea:
+it's the same pattern Cilium's FQDN-aware egress policies already use as
+"the standard patch for CDN IP-churn" (`summary.md`'s related-work
+review) — re-derived here from first-hand pain rather than borrowed
+up front, which is at least a good sign that the pain was real. It also
+generalizes Stage 0 seeding (§11): a named group is a declared source of
+truth exactly like a seed, except reusable by name across any workload
+that needs it and introducible at any time, not only up front.
+
+Both gaps resolve to the same operation — upgrade a raw destination before
+keying anything off it — just from different sources of truth: self-reported
+fleet membership for (1), operator declaration for (2). Worth designing as
+one destination-resolution step with two lookup sources, not two separate
+features.
+
+**The honest tradeoff.** A named group is strictly a *wider* trust grant
+than an exact IP — ratifying "talks to `approved-ntp-pool`" is broader than
+"talks to exactly these 4 addresses today," by design. That is the entire
+point (resistance to churn), but it is the same precision-for-usability
+trade as the already-documented stale-direct-IP limitation (§13), one level
+up: a loose DNS-suffix match or a wide CIDR is more resistant to churn *and*
+more forgiving to an attacker who can land traffic matching the same
+pattern. Stated plainly here so it is a deliberate trade, not an accidental
+side effect of convenience.
+
 ---
 
 ## 6. Data Model

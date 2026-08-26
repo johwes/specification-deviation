@@ -161,6 +161,21 @@ throwaway central listener; survive central outage.
   property actually being demonstrated is buffering/reconnect resilience,
   which doesn't depend on the transport's auth model. The same question
   will recur at M2.1 (central ingestion API currently specs mTLS too).
+- Destination identity resolution (architecture-specification.md §5.3) — two
+  findings, one mechanism. (1) East-west traffic between two monitored
+  workloads never becomes a graph edge today (raw destination IP instead of
+  the other workload's fleet identity); fixable if nodes self-report their
+  own addresses. (2) Round-robin/pool infrastructure (confirmed live:
+  chronyd/NTP pool, 38 separate direct-to-ip proposals for one conceptual
+  relationship) defeats FQDN-first ratification because per-IP DNS-cache
+  timing doesn't reliably line up with connection time for services designed
+  to rotate across many backing addresses. Mechanism: a third `EndpointRef`
+  type, `{"type": "group", "value": "<name>"}`, backed by an
+  operator-declared match rule (DNS suffix/CIDR/exact-list) — the same
+  pattern as Cilium's FQDN-based egress policies. Both findings are really
+  the same "upgrade a raw endpoint to a richer identity before keying a
+  decision off it" operation with two different sources of truth. Honest
+  tradeoff: a named group is strictly a wider trust grant than an exact IP.
 
 ## Standing rules for grooming
 
