@@ -7,6 +7,7 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -108,17 +109,24 @@ func (s *Store) ingestConn(ev RawEvent) {
 	if ev.FQDN != "" {
 		endpointType, endpointValue = "fqdn", ev.FQDN
 	}
+	// Effective port/protocol for matching — normalize the BPF
+	// sendmsg port=0 quirk for connected UDP (chronyd IPv6 shows 0).
+	port := ev.Port
+	proto := ev.protocolStr()
+	if port == 0 && proto == "udp" && strings.Contains(strings.ToLower(ev.FleetIdentity), "chronyd") {
+		port = 123
+	}
 	// NTP pool grouping under the pool's DNS name (e.g. time.aws.com).
 	// All chronyd 123/udp traffic for the same declared pool collapses to
 	// one proposal, even when the DNS cache missed and the endpoint is a
 	// raw IP (egress blocked — connect() observed, no response).
 	if s.seeds != nil {
-		if group, ok := s.seeds.GroupFor(endpointValue, ev.Port, ev.protocolStr(), ev.FleetIdentity); ok {
+		if group, ok := s.seeds.GroupFor(endpointValue, port, proto, ev.FleetIdentity); ok {
 			endpointType, endpointValue = "group", group
 		}
 	}
 
-	if dec, ok := s.decisions.Lookup(ev.FleetIdentity, endpointValue, ev.Port, ev.protocolStr()); ok {
+	if dec, ok := s.decisions.Lookup(ev.FleetIdentity, endpointValue, port, proto); ok {
 		if dec.Decision == "deny" {
 			s.signals.Emit(Signal{
 				Type:          "denied_endpoint_observed",
@@ -137,8 +145,7 @@ func (s *Store) ingestConn(ev RawEvent) {
 	// (queue item either way), then decide whether its absence is drift
 	// (workload already has a ratified baseline) or just Stage 1
 	// discovery (workload has never been reviewed).
-	protocol := ev.protocolStr()
-	key := proposalKey{ev.FleetIdentity, endpointValue, ev.Port, protocol}
+	key := proposalKey{ev.FleetIdentity, endpointValue, port, proto}
 
 	s.mu.Lock()
 	p, ok := s.proposals[key]
@@ -146,8 +153,8 @@ func (s *Store) ingestConn(ev RawEvent) {
 		p = &Proposal{
 			FleetIdentity:  ev.FleetIdentity,
 			Endpoint:       EndpointRef{Type: endpointType, Value: endpointValue},
-			Port:           ev.Port,
-			Protocol:       protocol,
+			Port:           port,
+			Protocol:       proto,
 			Instances:      make(map[string]bool),
 			FirstSeen:      time.Now(),
 			SampleComm:     ev.Comm,
@@ -169,7 +176,7 @@ func (s *Store) ingestConn(ev RawEvent) {
 			Severity:      "high",
 			Endpoint:      EndpointRef{Type: endpointType, Value: endpointValue},
 			SpecReference: "decision:" + ev.FleetIdentity,
-			Evidence:      map[string]any{"process": ev.Comm, "port": ev.Port, "protocol": ev.Protocol, "first_seen": p.FirstSeen},
+			Evidence:      map[string]any{"process": ev.Comm, "port": port, "protocol": proto, "first_seen": p.FirstSeen},
 		})
 	}
 }

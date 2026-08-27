@@ -141,7 +141,7 @@ func (s *SeedStore) MatchesWithGroup(endpointValue string, port uint16, proto st
 	low := strings.ToLower(endpointValue)
 	for _, r := range s.suffixRules {
 		if strings.HasSuffix(low, "."+r.suffix) || low == r.suffix {
-			if r.port != 0 && r.port != port {
+			if r.port != 0 && port != 0 && r.port != port {
 				continue
 			}
 			if r.proto != "" && r.proto != proto {
@@ -153,7 +153,9 @@ func (s *SeedStore) MatchesWithGroup(endpointValue string, port uint16, proto st
 	// 3) Fleet-aware IP fallback for blocked NTP: chronyd 123/udp
 	// direct-to-ip that missed the DNS cache → still part of its pool.
 	// Group is the pool's DNS name (e.g. time.aws.com), not an IP.
-	if port == 123 && proto == "udp" && strings.Contains(strings.ToLower(fleet), "chronyd") {
+	// Also handles IPv6 and the BPF sendmsg port=0 quirk for connected
+	// UDP (port 0 observed for chronyd sendmsg, not just 123).
+	if (port == 123 || port == 0) && proto == "udp" && strings.Contains(strings.ToLower(fleet), "chronyd") {
 		// Only for IP endpoints (no FQDN) that didn't match above.
 		if net.ParseIP(endpointValue) != nil {
 			for _, r := range s.suffixRules {
