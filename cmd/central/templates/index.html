@@ -14,6 +14,7 @@
   .sig-spec_deviation { color: #ffb703; }
   .sig-invariant_violation { color: #e63946; }
   .sig-denied_endpoint_observed { color: #e63946; font-weight: bold; }
+  .suggested { color: #2a6; font-weight: bold; }
   button.allow { background: #2a6; color: #fff; border: none; padding: 0.3em 0.8em; cursor: pointer; }
   button.deny { background: #a33; color: #fff; border: none; padding: 0.3em 0.8em; cursor: pointer; margin-left: 0.3em; }
   button.dismiss { background: #555; color: #fff; border: none; padding: 0.3em 0.8em; cursor: pointer; margin-left: 0.3em; }
@@ -66,7 +67,7 @@
   <td>{{.FirstSeen}}</td>
   <td>{{.LastSeen}}</td>
   <td>{{.Count}}</td>
-  <td class="risk">{{if .DirectToIP}}direct-to-ip {{end}}{{if .ShellInitiated}}shell-initiated{{end}}</td>
+  <td class="risk">{{if .DirectToIP}}direct-to-ip {{end}}{{if .ShellInitiated}}shell-initiated{{end}}{{if .Suggested}}<span class="suggested">suggested: allow ({{.SuggestedReason}})</span>{{end}}</td>
   <td>
     <form method="POST" action="/decide" style="display:inline">
       <input type="hidden" name="fleet_identity" value="{{$fi}}">

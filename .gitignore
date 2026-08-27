@@ -28,4 +28,5 @@ cmd/sensor/bpf_bpf*.go
 # cmd/central runtime data (decisions git repo, signal stream) -- generated
 # at runtime, not source. Default path is ./data relative to the working
 # directory central is started from.
-/data/
+/data/*
+!data/seeds.example.yaml

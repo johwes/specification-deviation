@@ -27,6 +27,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	decisionsPath := flag.String("decisions", "./data/decisions", "path to the git-backed decision store")
 	signalsPath := flag.String("signals", "./data/signals.jsonl", "path to the signal-stream file sink")
+	seedsPath := flag.String("seeds", "./data/seeds.yaml", "path to the static seeds file (optional)")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -49,7 +50,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	store := newStore(decisions, signals)
+	seeds, err := loadSeeds(*seedsPath)
+	if err != nil {
+		slog.Error("load seeds failed", "error", err, "path", *seedsPath)
+		os.Exit(1)
+	}
+	if len(seeds.seeds) > 0 {
+		slog.Info("loaded seeds", "count", len(seeds.seeds), "path", *seedsPath)
+	}
+
+	store := newStoreWithSeeds(decisions, signals, seeds)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", indexHandler(tmpl, store, signals))
@@ -59,7 +69,7 @@ func main() {
 	mux.HandleFunc("POST /dismiss-all", dismissAllHandler(store))
 	mux.HandleFunc("POST /events", eventsHandler(store))
 
-	slog.Info("central listening", "addr", *addr, "decisions", *decisionsPath, "signals", *signalsPath)
+	slog.Info("central listening", "addr", *addr, "decisions", *decisionsPath, "signals", *signalsPath, "seeds", *seedsPath)
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		slog.Error("server exited", "error", err)
 		os.Exit(1)

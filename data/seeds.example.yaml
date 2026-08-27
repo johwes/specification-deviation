@@ -1,0 +1,56 @@
+# Seeds — static-declared infrastructure → suggested: allow (advisory-only)
+#
+# Copy to data/seeds.yaml and edit for your environment, or generate with:
+#   bin/gen-seeds -out data/seeds.yaml   (not yet implemented — hand-edit for P0)
+#
+# Seeds never auto-authorize; they only add a "suggested: allow (<reason>)"
+# badge in the review queue. A human still clicks Allow → git commit.
+# A tampered config on a verified host must still produce spec_deviation.
+#
+# P0 scope: resolv.conf + chrony.conf (NTP pool) only. Port 0 = any port,
+# protocol "" = any. Group type is suffix-based (DNS), not exact IP.
+seeds:
+  # DNS — from /etc/resolv.conf nameserver lines (P0 #1)
+  # Live gap closed: 172.30.0.10:53 cluster DNS drift docs/report-m2.md:100
+  - endpoint: {type: ip, value: 172.30.0.10}
+    port: 53
+    protocol: udp
+    source: resolv.conf:1
+    reason: cluster DNS
+
+  - endpoint: {type: ip, value: 172.30.0.10}
+    port: 53
+    protocol: tcp
+    source: resolv.conf:1
+    reason: cluster DNS
+
+  # Example public resolvers — keep if your resolv.conf has them
+  - endpoint: {type: ip, value: 8.8.8.8}
+    port: 53
+    protocol: udp
+    source: resolv.conf:2
+    reason: DNS
+
+  - endpoint: {type: ip, value: 8.8.8.8}
+    port: 53
+    protocol: tcp
+    source: resolv.conf:2
+    reason: DNS
+
+  # NTP — from /etc/chrony.conf pool directive (P0 #2)
+  # Collapses 38 direct-to-ip:123/udp proposals docs/backlog.md:170 →
+  # one suggested group via DNS suffix *.pool.ntp.org (architecture spec §5.3)
+  # Wider trust than exact IP — shown explicitly in UI.
+  - endpoint: {type: group, value: approved-ntp-pool}
+    port: 123
+    protocol: udp
+    source: chrony.conf:pool
+    reason: NTP pool 2.rhel.pool.ntp.org
+
+  # Optional exact server (if chrony.conf has `server time.google.com`)
+  # Uncomment as needed:
+  # - endpoint: {type: fqdn, value: time.google.com}
+  #   port: 123
+  #   protocol: udp
+  #   source: chrony.conf:server
+  #   reason: NTP server time.google.com

@@ -53,31 +53,39 @@ type proposalKey struct {
 }
 
 type Proposal struct {
-	FleetIdentity  string
-	Endpoint       EndpointRef
-	Port           uint16
-	Protocol       string
-	Instances      map[string]bool
-	FirstSeen      time.Time
-	LastSeen       time.Time
-	Count          int
-	SampleComm     string
-	DirectToIP     bool // risk annotation: no FQDN observed for this endpoint
-	ShellInitiated bool // risk annotation: first seen from an interactive shell
+	FleetIdentity   string
+	Endpoint        EndpointRef
+	Port            uint16
+	Protocol        string
+	Instances       map[string]bool
+	FirstSeen       time.Time
+	LastSeen        time.Time
+	Count           int
+	SampleComm      string
+	DirectToIP      bool // risk annotation: no FQDN observed for this endpoint
+	ShellInitiated  bool // risk annotation: first seen from an interactive shell
+	Suggested       bool // static seed match → suggested: allow
+	SuggestedReason string
 }
 
 type Store struct {
 	decisions *DecisionStore
 	signals   *SignalSink
+	seeds     *SeedStore
 
 	mu        sync.Mutex
 	proposals map[proposalKey]*Proposal
 }
 
 func newStore(decisions *DecisionStore, signals *SignalSink) *Store {
+	return newStoreWithSeeds(decisions, signals, newSeedStore(nil))
+}
+
+func newStoreWithSeeds(decisions *DecisionStore, signals *SignalSink, seeds *SeedStore) *Store {
 	return &Store{
 		decisions: decisions,
 		signals:   signals,
+		seeds:     seeds,
 		proposals: make(map[proposalKey]*Proposal),
 	}
 }
@@ -177,7 +185,8 @@ func (s *Store) ingestRawSocket(ev RawEvent) {
 }
 
 // PendingProposals returns proposals with no ratified decision yet,
-// grouped by fleet identity, for the review UI (M2.6).
+// grouped by fleet identity, for the review UI (M2.6). Suggested
+// annotation is computed lazily here so Ingest stays cheap.
 func (s *Store) PendingProposals() map[string][]*Proposal {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,6 +195,15 @@ func (s *Store) PendingProposals() map[string][]*Proposal {
 	for k, p := range s.proposals {
 		if _, decided := s.decisions.Lookup(k.fleetIdentity, k.endpointValue, k.port, k.protocol); decided {
 			continue
+		}
+		if s.seeds != nil {
+			if ok, reason := s.seeds.Matches(k.endpointValue, k.port, k.protocol); ok {
+				p.Suggested = true
+				p.SuggestedReason = reason
+			} else {
+				p.Suggested = false
+				p.SuggestedReason = ""
+			}
 		}
 		out[k.fleetIdentity] = append(out[k.fleetIdentity], p)
 	}

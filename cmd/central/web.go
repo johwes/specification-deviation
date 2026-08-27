@@ -16,15 +16,17 @@ import (
 )
 
 type proposalView struct {
-	Endpoint       EndpointRef
-	Port           uint16
-	Protocol       string
-	InstanceCount  int
-	FirstSeen      string
-	LastSeen       string
-	Count          int
-	DirectToIP     bool
-	ShellInitiated bool
+	Endpoint        EndpointRef
+	Port            uint16
+	Protocol        string
+	InstanceCount   int
+	FirstSeen       string
+	LastSeen        string
+	Count           int
+	DirectToIP      bool
+	ShellInitiated  bool
+	Suggested       bool
+	SuggestedReason string
 }
 
 type groupView struct {
@@ -57,15 +59,17 @@ func buildPage(store *Store, signals *SignalSink) pageData {
 		views := make([]proposalView, len(props))
 		for i, p := range props {
 			views[i] = proposalView{
-				Endpoint:       p.Endpoint,
-				Port:           p.Port,
-				Protocol:       p.Protocol,
-				InstanceCount:  len(p.Instances),
-				FirstSeen:      p.FirstSeen.Format(timeFmt),
-				LastSeen:       p.LastSeen.Format(timeFmt),
-				Count:          p.Count,
-				DirectToIP:     p.DirectToIP,
-				ShellInitiated: p.ShellInitiated,
+				Endpoint:        p.Endpoint,
+				Port:            p.Port,
+				Protocol:        p.Protocol,
+				InstanceCount:   len(p.Instances),
+				FirstSeen:       p.FirstSeen.Format(timeFmt),
+				LastSeen:        p.LastSeen.Format(timeFmt),
+				Count:           p.Count,
+				DirectToIP:      p.DirectToIP,
+				ShellInitiated:  p.ShellInitiated,
+				Suggested:       p.Suggested,
+				SuggestedReason: p.SuggestedReason,
 			}
 		}
 		total += len(views)
