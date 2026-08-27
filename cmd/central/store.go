@@ -108,6 +108,15 @@ func (s *Store) ingestConn(ev RawEvent) {
 	if ev.FQDN != "" {
 		endpointType, endpointValue = "fqdn", ev.FQDN
 	}
+	// NTP pool grouping under the pool's DNS name (e.g. time.aws.com).
+	// All chronyd 123/udp traffic for the same declared pool collapses to
+	// one proposal, even when the DNS cache missed and the endpoint is a
+	// raw IP (egress blocked — connect() observed, no response).
+	if s.seeds != nil {
+		if group, ok := s.seeds.GroupFor(endpointValue, ev.Port, ev.protocolStr(), ev.FleetIdentity); ok {
+			endpointType, endpointValue = "group", group
+		}
+	}
 
 	if dec, ok := s.decisions.Lookup(ev.FleetIdentity, endpointValue, ev.Port, ev.protocolStr()); ok {
 		if dec.Decision == "deny" {
@@ -197,7 +206,7 @@ func (s *Store) PendingProposals() map[string][]*Proposal {
 			continue
 		}
 		if s.seeds != nil {
-			if ok, reason := s.seeds.Matches(k.endpointValue, k.port, k.protocol); ok {
+			if ok, reason, _ := s.seeds.MatchesWithGroup(k.endpointValue, k.port, k.protocol, k.fleetIdentity); ok {
 				p.Suggested = true
 				p.SuggestedReason = reason
 			} else {

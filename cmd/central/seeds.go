@@ -59,31 +59,30 @@ func newSeedStore(seeds []Seed) *SeedStore {
 		byValuePort: make(map[string]string, len(seeds)),
 	}
 	for _, sd := range seeds {
-		// Index exact non-group seeds by value|port|proto and wildcards.
 		if sd.Endpoint.Type == "group" {
-			// Group is only suffix-based for P0 (NTP pool). The seed's
-			// value is the group name; the matchable DNS names are derived
-			// from the Reason/Source in the example, but for now we
-			// hard-wire the pool suffix from the seed value convention:
-			// a group seed for NTP implies suffix pool.ntp.org.
-			// Callers that construct group seeds with explicit suffix can
-			// extend this; the committed example uses the same convention.
-			// Also accept an ip/CIDR group later — not needed for P0.
+			// Group seeds are per-pool DNS names (e.g. time.aws.com,
+			// 2.rhel.pool.ntp.org) from chrony.conf pool lines. The
+			// observed endpoint may be the pool name itself or a
+			// subdomain/round-robin member, or — when the DNS cache
+			// missed — a raw IP from chronyd. Suffix matching covers the
+			// first two; the IP case is handled in GroupFor with
+			// fleet-aware fallback for port 123/udp.
+			suffix := strings.ToLower(sd.Endpoint.Value)
+			reason := sd.Reason
+			if sd.Source != "" {
+				reason = fmt.Sprintf("%s (%s)", sd.Reason, sd.Source)
+			}
 			s.suffixRules = append(s.suffixRules, suffixRule{
-				suffix: "pool.ntp.org",
+				suffix: suffix,
 				group:  sd.Endpoint.Value,
-				reason: sd.Reason,
+				reason: reason,
 				port:   sd.Port,
 				proto:  sd.Protocol,
 			})
-			// Also match rhel.pool.ntp.org subdomains.
-			s.suffixRules = append(s.suffixRules, suffixRule{
-				suffix: "rhel.pool.ntp.org",
-				group:  sd.Endpoint.Value,
-				reason: sd.Reason,
-				port:   sd.Port,
-				proto:  sd.Protocol,
-			})
+			// Exact group value should also be directly suggested.
+			for _, key := range seedKeys(sd.Endpoint.Value, sd.Port, sd.Protocol) {
+				s.byValuePort[key] = reason
+			}
 			continue
 		}
 		for _, key := range seedKeys(sd.Endpoint.Value, sd.Port, sd.Protocol) {
@@ -120,32 +119,65 @@ func seedKeys(value string, port uint16, proto string) []string {
 // static seed. If so, the second return is the human reason string
 // (Reason + optional Source) for the UI badge.
 func (s *SeedStore) Matches(endpointValue string, port uint16, proto string) (bool, string) {
+	ok, reason, _ := s.MatchesWithGroup(endpointValue, port, proto, "")
+	return ok, reason
+}
+
+// MatchesWithGroup is Matches but fleet-aware for the NTP pool case
+// where chronyd produced a direct-to-ip endpoint (no FQDN) because the
+// DNS cache missed before connect. In that case any 123/udp traffic
+// from chronyd is considered part of its declared pool group.
+func (s *SeedStore) MatchesWithGroup(endpointValue string, port uint16, proto string, fleet string) (bool, string, string) {
 	if s == nil || len(s.seeds) == 0 {
-		return false, ""
+		return false, "", ""
 	}
 	// 1) Exact value match (ip or fqdn), respecting port/proto wildcards.
 	for _, key := range seedKeys(endpointValue, port, proto) {
 		if reason, ok := s.byValuePort[key]; ok {
-			return true, reason
+			return true, reason, ""
 		}
 	}
-	// 2) Suffix group match — NTP pools: an observed fqdn like
-	// 0.rhel.pool.ntp.org ends with the pool suffix → matches the group
-	// seed. Honest tradeoff: wider trust than exact IP (parking lot).
+	// 2) Suffix group match — pool host or its subdomains.
 	low := strings.ToLower(endpointValue)
 	for _, r := range s.suffixRules {
 		if strings.HasSuffix(low, "."+r.suffix) || low == r.suffix {
-			// Port/proto must match if the rule constrains them.
 			if r.port != 0 && r.port != port {
 				continue
 			}
 			if r.proto != "" && r.proto != proto {
 				continue
 			}
-			return true, r.reason
+			return true, r.reason, r.group
 		}
 	}
-	return false, ""
+	// 3) Fleet-aware IP fallback for blocked NTP: chronyd 123/udp
+	// direct-to-ip that missed the DNS cache → still part of its pool.
+	// Group is the pool's DNS name (e.g. time.aws.com), not an IP.
+	if port == 123 && proto == "udp" && strings.Contains(strings.ToLower(fleet), "chronyd") {
+		// Only for IP endpoints (no FQDN) that didn't match above.
+		if net.ParseIP(endpointValue) != nil {
+			for _, r := range s.suffixRules {
+				if r.port == 123 && (r.proto == "udp" || r.proto == "") {
+					// Wider trust than exact IP — grouped under pool name.
+					return true, r.reason + " (grouped pool, egress blocked — connect() observed)", r.group
+				}
+			}
+		}
+	}
+	return false, "", ""
+}
+
+// GroupFor returns the group name for an endpoint that belongs to a
+// pool, if any, for pre-keying proposals under the pool name.
+func (s *SeedStore) GroupFor(endpointValue string, port uint16, proto string, fleet string) (string, bool) {
+	_, _, group := s.MatchesWithGroup(endpointValue, port, proto, fleet)
+	if group != "" {
+		return group, true
+	}
+	// For IP fallback, MatchesWithGroup already returned group via
+	// the fleet-aware path, so we also need to surface it for grouping.
+	// The above already handles it; exact+suffix also returned group.
+	return "", false
 }
 
 // ---------------------------------------------------------------------------
@@ -225,11 +257,12 @@ func ParseChronyConf(data []byte) []Seed {
 				continue
 			}
 			seenPool[host] = true
-			// Pool → group seed. The suffix rule mapping lives in
-			// newSeedStore (pool.ntp.org, rhel.pool.ntp.org). The seed
-			// value is the group name; matching is suffix-based.
+			// Pool → group seed keyed by the pool's DNS name. This lets
+			// all round-robin NTP traffic for that pool collapse under
+			// the pool name, including direct-to-ip when egress is
+			// blocked and the DNS cache missed before connect.
 			seeds = append(seeds, Seed{
-				Endpoint: EndpointRef{Type: "group", Value: "approved-ntp-pool"},
+				Endpoint: EndpointRef{Type: "group", Value: host},
 				Port:     123,
 				Protocol: "udp",
 				Source:   fmt.Sprintf("chrony.conf:%d", lineno),

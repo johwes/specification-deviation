@@ -39,13 +39,23 @@ seeds:
 
   # NTP — from /etc/chrony.conf pool directive (P0 #2)
   # Collapses 38 direct-to-ip:123/udp proposals docs/backlog.md:170 →
-  # one suggested group via DNS suffix *.pool.ntp.org (architecture spec §5.3)
-  # Wider trust than exact IP — shown explicitly in UI.
-  - endpoint: {type: group, value: approved-ntp-pool}
+  # one suggested group per pool's DNS name (architecture spec §5.3).
+  # Example: pool time.aws.com on the VM → value: time.aws.com.
+  # All chronyd 123/udp traffic for that pool (including direct-to-ip
+  # when egress is blocked and DNS cache missed) groups under the pool
+  # name. Wider trust than exact IP — shown explicitly in UI.
+  - endpoint: {type: group, value: time.aws.com}
     port: 123
     protocol: udp
     source: chrony.conf:pool
-    reason: NTP pool 2.rhel.pool.ntp.org
+    reason: NTP pool time.aws.com
+
+  # Additional pool example (rhel pool, commented by default on this VM):
+  # - endpoint: {type: group, value: 2.rhel.pool.ntp.org}
+  #   port: 123
+  #   protocol: udp
+  #   source: chrony.conf:pool
+  #   reason: NTP pool 2.rhel.pool.ntp.org
 
   # Optional exact server (if chrony.conf has `server time.google.com`)
   # Uncomment as needed:
